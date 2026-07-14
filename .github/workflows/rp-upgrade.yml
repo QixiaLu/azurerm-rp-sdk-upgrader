@@ -36,9 +36,11 @@ on:
         type: boolean
         default: true
 
-# Lets the job push the result branch back to the fork.
+# permissions: the auto GITHUB_TOKEN only needs to READ this (runner) repo to check out
+# the upgrader tool. It grants NOTHING on the fork — the fork push is authenticated
+# separately by FORK_PUSH_TOKEN (a PAT with contents:write on the fork).
 permissions:
-  contents: write
+  contents: read
 
 # One in-flight run per (rp, version); don't cancel a run mid-provision.
 concurrency:
@@ -50,8 +52,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 720 # acctest provisions real resources and can run for hours
     env:
-      # Copilot auth (a fine-grained PAT with Copilot access; also needs contents:write on
-      # the fork if you reuse it for the push step below).
+      # Copilot auth only — used inside the container for the SDK sessions.
       GH_TOKEN: ${{ secrets.COPILOT_TOKEN }}
       # Azure creds — only consumed when acctest runs (skip_acctest=false).
       ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
@@ -70,7 +71,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ inputs.fork_repo }}
-          token: ${{ secrets.COPILOT_TOKEN }} # needs contents:write on the fork to push back
+          token: ${{ secrets.FORK_PUSH_TOKEN }} # PAT with contents:write on the fork
           path: azurerm
           fetch-depth: 0
 
