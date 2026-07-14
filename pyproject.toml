@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "upgrader"
+version = "0.1.0"
+description = "Ralph-loop CLI that upgrades one Azure RP API version in terraform-provider-azurerm (upgrade -> acctest triage) via GitHub Copilot agents."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MPL-2.0" }
+# Drives the agents through the official GitHub Copilot SDK for Python
+# (https://github.com/github/copilot-sdk). Everything else stays stdlib-only.
+dependencies = [
+    "github-copilot-sdk>=1.0",
+]
+
+[project.scripts]
+upgrader = "upgrader.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["upgrader*"]
+
+[tool.setuptools.package-data]
+upgrader = ["prompts/*.md", "*.md"]
