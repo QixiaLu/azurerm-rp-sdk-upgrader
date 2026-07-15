@@ -82,69 +82,38 @@ def _build_prompt(prompt_file: Path, rp_name: str, *, test_regex: str,
     })
 
 
-def _fixes_applied(result: dict[str, Any]) -> bool:
-    """True if the last collect turn changed any code (test-side fix or breaking-change
-    mitigation) and so warrants a fresh full-suite re-run to re-verify."""
-    if result.get("fixed"):
-        return True
-    return any(bc.get("mitigated") for bc in result.get("breaking_changes", []))
-
-
-# Phase outcomes. Two orthogonal axes are collapsed into one enum ON PURPOSE, but only along
-# the control-flow axis (continue vs stop). The result/report axis stays richer and is NOT
-# flattened: `api_bug` (a real detection — Azure contradicts its own spec) is kept distinct
-# from `tool_error` (the agent/infra itself failed — not a finding). Per-test detail
-# (fixed / breaking_changes / api_bugs / needs_human) always lives in the collect result.json.
-FIXED = "fixed"              # code changed this round -> re-verify with another round (CONTINUE)
-CLEAN = "clean"              # converged: suite green, nothing left to change (STOP, success)
-API_BUG = "api-bug"          # >=1 blocked: Azure API bug detected -> STOP, report the finding
-TOOL_ERROR = "tool-error"    # agent/infra failure -> STOP, not a finding
-NEEDS_HUMAN = "needs-human"  # only non-code failures left (env/quota/flake/deferred) -> STOP
-INCOMPLETE = "incomplete"    # used up max_rounds while still applying fixes -> STOP
-
 # The collect agent declares its control-flow intent as ``loop_action`` (see
-# PROMPT_ACCTEST_COLLECT.md). Python trusts that declaration and only maps it to an outcome;
-# the verbose per-test reasoning that produced it stays in the agent/skill, not here.
-_LOOP_ACTION_TO_OUTCOME = {
-    "reverify": FIXED,        # applied fixes (or triage unfinished) -> run another round
-    "converged": CLEAN,       # nothing left to change; suite green
-    "api_bug": API_BUG,       # Azure API contradicts its own spec -> stop, it's a finding
-    "tool_error": TOOL_ERROR,  # the run/agent itself failed -> stop, not a finding
-    "needs_human": NEEDS_HUMAN,  # only env/quota/flake/deferred remain -> stop
-}
+# PROMPT_ACCTEST_COLLECT.md). The loop re-runs ONLY on ``reverify``; every other value stops,
+# and ``converged`` is the only success. The distinct stop reasons (api_bug / tool_error /
+# needs_human) differ only in what we log — the per-test detail that justifies them lives in
+# the collect result.json, so Python keeps just the label.
+REVERIFY = "reverify"        # applied fixes (or triage unfinished) -> run another round (CONTINUE)
+CONVERGED = "converged"      # suite green, nothing left to change -> STOP, success
+INCOMPLETE = "incomplete"    # used up max_rounds while still applying fixes -> STOP
+_STOP_ACTIONS = {CONVERGED, "api_bug", "tool_error", "needs_human"}
 
 
-def _outcome(result: dict[str, Any]) -> str:
-    """Classify one finished collect round into a phase outcome — the single control-flow
-    signal for the launch->wait->collect loop. Only ``FIXED`` continues the loop.
-
-    The classification is OWNED BY THE COLLECT AGENT, which declares it explicitly as
-    ``loop_action`` in its result (the agent understands the Go/Azure failure semantics;
-    Python does not). This function just maps that declaration to a phase outcome. If the
-    field is missing or unrecognized (older/partial result), it falls back to deriving the
-    outcome from the individual signals so a dropped field never stalls the loop."""
-    mapped = _LOOP_ACTION_TO_OUTCOME.get(result.get("loop_action"))
-    if mapped is not None:
-        return mapped
-    return _fallback_outcome(result)
-
-
-def _fallback_outcome(result: dict[str, Any]) -> str:
-    """Defensive derivation of the phase outcome when the agent did not declare a usable
-    ``loop_action`` — reconstructs it from status/api_bugs/fixed/breaking_changes."""
+def _loop_action(result: dict[str, Any]) -> str:
+    """One finished collect round's control-flow intent — the single signal for the
+    launch->wait->collect loop. Trust the agent's declared ``loop_action`` (it understands the
+    Go/Azure failure semantics; Python does not); if it's missing/unrecognized (older/partial
+    result), derive it from the raw signals so a dropped field never stalls the loop."""
+    action = result.get("loop_action")
+    if action == REVERIFY or action in _STOP_ACTIONS:
+        return action
     status = result.get("status")
     if status == "blocked" or result.get("api_bugs"):
-        return API_BUG
+        return "api_bug"
     if status == "failed":
-        return TOOL_ERROR
-    if _fixes_applied(result):
-        return FIXED
+        return "tool_error"
+    if result.get("fixed") or any(bc.get("mitigated") for bc in result.get("breaking_changes", [])):
+        return REVERIFY
     if status == "done":
-        return CLEAN
-    # Not done, but nothing changed and no hard stop: only non-actionable failures remain
-    # (env/quota/flake) or breaking changes deferred to a human. Re-running the identical
-    # suite would just reproduce them, so stop rather than burn another multi-hour run.
-    return NEEDS_HUMAN
+        return CONVERGED
+    # Nothing changed and no hard stop: only non-actionable failures remain (env/quota/flake)
+    # or breaking changes deferred to a human. Re-running the identical suite would just
+    # reproduce them, so stop rather than burn another multi-hour run.
+    return "needs_human"
 
 
 # --- detached-run watch (PID-based, fresh-only: never re-attaches) -------------------
@@ -222,10 +191,9 @@ async def _run_phase(client, run_dir: Path, acctest_dir: Path, *, rp_name: str,
                      model: str | None, verbose: bool = False) -> str:
     """Run one phase's (launch -> wait -> collect/fix) round loop.
 
-    Returns a phase outcome (see the module's outcome constants): ``CLEAN`` when the phase
-    converged (suite green, nothing left to change), ``API_BUG`` / ``TOOL_ERROR`` /
-    ``NEEDS_HUMAN`` for the distinct stop reasons, or ``INCOMPLETE`` when it ran out of rounds
-    while still applying fixes. Only ``CLEAN`` is success.
+    Returns the collect round's ``loop_action`` (``converged`` / ``api_bug`` / ``tool_error`` /
+    ``needs_human``), or ``incomplete`` when it ran out of rounds while still applying fixes.
+    Only ``converged`` is success.
     """
     launch_result = run_dir / f"acctest.{phase}.launch.result.json"
     collect_result = run_dir / f"acctest.{phase}.result.json"
@@ -262,15 +230,15 @@ async def _run_phase(client, run_dir: Path, acctest_dir: Path, *, rp_name: str,
                           verbose=verbose)
 
         result = read_result(collect_result)
-        outcome = _outcome(result)
-        if outcome == FIXED:
+        action = _loop_action(result)
+        if action == REVERIFY:
             print(f"acctest [{phase}] round {rnd} applied fixes; re-running suite to verify.")
             continue
-        if outcome == CLEAN:
+        if action == CONVERGED:
             print(f"acctest [{phase}] clean after {rnd} round(s); logs in {run_dir}")
         else:
-            print(f"acctest [{phase}] stopping at round {rnd} ({outcome}); see {collect_result}")
-        return outcome
+            print(f"acctest [{phase}] stopping at round {rnd} ({action}); see {collect_result}")
+        return action
 
     print(f"acctest [{phase}] reached max_rounds={max_rounds} while still fixing; see {collect_result}")
     return INCOMPLETE
@@ -285,7 +253,7 @@ async def run_acctest(client, run_dir: Path, acctest_dir: Path, *, rp_name: str,
         client, run_dir, acctest_dir, rp_name=rp_name, test_regex=test_regex,
         phase="smoke", phase_scope=SMOKE_SELECTOR, max_rounds=max_rounds, model=model,
         verbose=verbose)
-    if smoke != CLEAN:
+    if smoke != CONVERGED:
         print(f"smoke phase did not converge ({smoke}); NOT running the full suite. "
               f"see logs in {run_dir}")
         return False
@@ -295,6 +263,6 @@ async def run_acctest(client, run_dir: Path, acctest_dir: Path, *, rp_name: str,
         client, run_dir, acctest_dir, rp_name=rp_name, test_regex=test_regex,
         phase="full", phase_scope="the entire suite matching test_regex",
         max_rounds=max_rounds, model=model, verbose=verbose)
-    if full != CLEAN:
+    if full != CONVERGED:
         print(f"full phase did not converge ({full}); see logs in {run_dir}")
-    return full == CLEAN
+    return full == CONVERGED

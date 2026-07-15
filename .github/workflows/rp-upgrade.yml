@@ -115,8 +115,7 @@ jobs:
           git config user.name  "rp-upgrade-bot"
           git config user.email "rp-upgrade-bot@users.noreply.github.com"
           git checkout -b "$BRANCH"
-          # Keep the .upgrader/ run artifacts out of the pushed branch (optional).
-          git add -A -- ':!.upgrader' ':!.acctest-run'
+          git add -A
           if git diff --cached --quiet; then
             echo "No changes produced — nothing to push."
             exit 0
@@ -125,13 +124,14 @@ jobs:
           git push --force-with-lease -u origin "$BRANCH"
           echo "Pushed $BRANCH — open a PR from it for human review."
 
-      # Optional: also archive the per-run logs/result.json so a failed run is debuggable.
+      # Upload ALL per-run logs/result.json so any failed run is fully debuggable.
       - name: Upload run artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: upgrader-run-${{ inputs.rp_name }}-${{ inputs.target_api_version }}
           path: |
-            ${{ github.workspace }}/azurerm/.upgrader/**
-            ${{ github.workspace }}/azurerm/.acctest-run/**
-          if-no-files-found: ignore
+            ${{ github.workspace }}/azurerm/.upgrader
+            ${{ github.workspace }}/azurerm/.acctest-run
+          if-no-files-found: warn
+          include-hidden-files: true
