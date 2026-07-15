@@ -51,6 +51,7 @@ jobs:
   upgrade:
     runs-on: ubuntu-latest
     timeout-minutes: 720 # acctest provisions real resources and can run for hours
+    environment: COPILOT_TOKEN
     env:
       # Copilot auth only — used inside the container for the SDK sessions.
       GH_TOKEN: ${{ secrets.COPILOT_TOKEN }}
