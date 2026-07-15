@@ -57,20 +57,29 @@ If any are missing, stop and report before creating any resources.
    - Add `--status SUCCESS` to baseline only against the last green `main` build; omit it to use the latest build of any status.
    - If no build matches, the helper writes an empty baseline (`{}`) and exits `2` — note degraded mode (all failures treated as new) and continue.
 3. Choose the tests for this `test_phase` and build the `-run` filter. The first launch for a service is ALWAYS smoke, even if the input says `full` — a full first run wastes hours a trivial regression would have caught by the cheap gate:
-   - `full` → run the whole suite: `-run=<test_regex>`.
+   - `full` → run the whole suite: filter is `<test_regex>`.
    - `smoke` → enumerate top-level `func TestAcc…(t *testing.T)` in
      `internal/services/<service_name>/*_test.go` matching `test_regex`, keep only names ending
-     in `_basic`, and build an anchored filter
-     `-run='^(<Name1>|<Name2>|...)$'` (record them in `.acctest-run/<service_name>/smoke_tests.txt`).
-     Fall back to `-run=<test_regex>` if none match.
-4. Launch the run DETACHED with the phase's `-run` filter, recording its PID so an external watcher can poll it:
+     in `_basic`, and build an anchored RE2 filter
+     `^(<Name1>|<Name2>|...)$` (record them in `.acctest-run/<service_name>/smoke_tests.txt`).
+     Fall back to `<test_regex>` if none match.
+   Write the filter as the RAW RE2 pattern only (no shell quotes here); step 4 adds the quoting.
+4. Launch the run DETACHED with the phase's `-run` filter, recording its PID so an external watcher can poll it.
+
+   **Quoting is critical.** The `-run` pattern contains `(`, `|`, and `$`, which are BOTH `make` and `/bin/sh` metacharacters. `make` expands `$(TESTARGS)` UNQUOTED into a `/bin/sh` (dash) command, so the pattern must carry its own quoting and escape `$` for `make`:
+   - keep the whole `TESTARGS=...` in SINGLE quotes at your shell,
+   - wrap the regex in DOUBLE quotes so dash treats `(` and `|` as literals,
+   - write every literal `$` in the regex (the trailing anchor) as `$$` so `make` emits a single `$` (an un-doubled `$` is silently eaten, dropping the anchor).
+
+   So for a smoke pattern `^(TestAccFoo_basic|TestAccBar_basic)$`, launch with:
    ```bash
    nohup make acctests SERVICE='<service_name>' \
-     TESTARGS='-run=<run_filter> -json' TESTTIMEOUT='<timeout>m' \
+     TESTARGS='-run="^(TestAccFoo_basic|TestAccBar_basic)$$" -json' TESTTIMEOUT='<timeout>m' \
      > .acctest-run/<service_name>/run.json \
      2> .acctest-run/<service_name>/run.err &
    echo $! > .acctest-run/<service_name>/run.pid
    ```
+   (A no-metacharacter `full` filter like `TestAcc` still uses the same form: `TESTARGS='-run="TestAcc" -json'`.)
    Record start time + phase + the `-run` filter in `.acctest-run/<service_name>/meta.json`. Report and exit the turn — **do not wait**.
 5. Leave all edits unstaged; never git commit/push/checkout. Write the result and EXIT.
 

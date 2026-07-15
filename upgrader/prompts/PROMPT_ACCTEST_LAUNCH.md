@@ -29,17 +29,25 @@ Follow the rp-acctest-launch skill:
 3. Build the -run filter for THIS `test_phase` (see the skill's launch step 3 for the exact
    enumeration). The first launch for a service is ALWAYS smoke, even if the input says "full" —
    a full first run wastes hours a trivial regression would have caught by the cheap gate:
-   - smoke: the `_basic` entrypoints matching test_regex, anchored as -run='^(<Name1>|...)$',
-     recorded in <acctest_dir>/smoke_tests.txt (fall back to -run='<test_regex>' if none match).
-   - full: the whole suite, -run='<test_regex>'; launch only after smoke is green.
+   - smoke: the `_basic` entrypoints matching test_regex, as an anchored RE2 pattern
+     `^(<Name1>|...)$`, recorded in <acctest_dir>/smoke_tests.txt (fall back to `<test_regex>`
+     if none match).
+   - full: the whole suite, `<test_regex>`; launch only after smoke is green.
+   Keep the filter as the RAW RE2 pattern (no shell quotes); step 4 adds the quoting.
 
 4. Launch the run DETACHED with the phase's -run filter, recording its PID so an external
    watcher can poll it. Disable the Go test timeout (TESTTIMEOUT=0) so a long suite is never
-   cut off (substitute the -run filter chosen in step 3 for <run_filter>):
+   cut off. QUOTING IS CRITICAL: the pattern's `(`, `|`, and `$` are both `make` and `/bin/sh`
+   metacharacters, and `make` expands $(TESTARGS) UNQUOTED into a dash command. So keep
+   TESTARGS in SINGLE quotes, wrap the regex in DOUBLE quotes (so dash treats `(`/`|` as
+   literal), and double every literal `$` as `$$` (so `make` emits one `$`; an un-doubled `$`
+   is silently eaten, dropping the anchor). Substitute the raw pattern from step 3 for
+   <run_filter> and its `$`-doubled form for <run_filter_$$>:
      nohup make acctests SERVICE='<rp_name>' \
-       TESTARGS='-run=<run_filter> -json' TESTTIMEOUT='0' \
+       TESTARGS='-run="<run_filter_$$>" -json' TESTTIMEOUT='0' \
        > <acctest_dir>/run.json 2> <acctest_dir>/run.err &
      echo $! > <acctest_dir>/run.pid
+   e.g. TESTARGS='-run="^(TestAccFoo_basic|TestAccBar_basic)$$" -json'.
    Record start time + phase + the -run filter in <acctest_dir>/meta.json. Then REPORT and
    EXIT — do not wait.
 
