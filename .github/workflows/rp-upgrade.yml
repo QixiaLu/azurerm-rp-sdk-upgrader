@@ -96,6 +96,7 @@ jobs:
             "${{ inputs.rp_name }}" "${{ inputs.target_api_version }}" \
             --repo /workspace/azurerm \
             --model "${{ inputs.model }}" \
+            --verbose \
             ${{ inputs.old_api_version != '' && format('--old-api-version {0}', inputs.old_api_version) || '' }} \
             ${{ inputs.skip_acctest && '--skip-acctest' || '' }}
 
