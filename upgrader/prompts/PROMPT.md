@@ -18,7 +18,10 @@ Inputs:
 3. Validate: focused `go build ./internal/services/<rp_name>/...` while iterating, then full
    `go build ./...` to confirm.
 4. Update IMPLEMENTATION_PLAN.md NOW: tick finished tasks, append findings/blockers.
-5. Never read/diff vendor/ or go.sum. Leave all edits unstaged; do not git commit/push/
+5. Once the upgrade is otherwise complete (build green, no tasks left), format the code from
+   the repo root: `make fmt` and `make terrafmt`. Skip while still mid-task. Never hand-format
+   vendor/.
+6. Never read/diff vendor/ or go.sum. Leave all edits unstaged; do not git commit/push/
    checkout. Write result.json and EXIT.
 
 When finished, write a single JSON object to <result_path> with: "status"

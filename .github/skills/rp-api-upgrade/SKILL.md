@@ -48,7 +48,10 @@ Use this skill when you need to:
 8. Validate full provider build:
    - `go build ./...`
 9. If `target_api_version` is a preview version, run `go run internal/tools/preview-api-version-linter/main.go` and follow the exceptions path in `contributing/topics/guide-api-version.md`.
-10. Apply formatting for changed Go files only (`gofumpt`/`goimports`, matching the repo's `make fmt`/`goimports` targets).
+10. Format everything AFTER all edits are done — run the repo's make targets from the repo root, not per-file tools:
+    - `make fmt` (gofmt/gofumpt + goimports over the Go code),
+    - `make terrafmt` (formats the embedded Terraform HCL in acceptance tests and docs).
+    Re-run `go build ./...` once more if formatting touched anything, and never hand-format `vendor/`.
 
 ## Heuristics
 
@@ -74,6 +77,7 @@ Use this skill when you need to:
 - No unresolved compile errors from the upgrade.
 - Breaking changes are either mitigated according to `contributing/topics/guide-breaking-changes.md` or captured as explicit follow-up actions.
 - `go build ./...` return exit code `0`.
+- Code is formatted with `make fmt` and `make terrafmt` after all edits (run from the repo root).
 - If `go-azure-sdk` was bumped, the new version is the minimum that ships the target API (noted in deliverables); any `vendor/` changes are from that bump only.
 
 ## Deliverables
