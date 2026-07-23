@@ -22,6 +22,10 @@ _DENIED_GIT = (
     "git reset", "git stash", "git rebase", "git merge", "git tag",
 )
 
+# Event types whose content is the agent's own output; everything else (system prompt, prompt
+# echo, skill bodies, lifecycle) is skipped by the logger.
+_LOGGED_EVENT_TYPES = frozenset({"assistant.message", "assistant.reasoning"})
+
 
 def read_result(result_path: Path) -> dict[str, Any]:
     """Read an agent's JSON result sidecar, or {} if it is missing/unparsable."""
@@ -52,36 +56,35 @@ def _no_vcs_hooks() -> dict[str, Any]:
 
 
 def _event_logger(log_path: Path | None):
-    """Open a per-turn log file and return (on_event, write, close) recording every event.
-
-    When ``log_path`` is None (non-verbose runs), nothing is written to disk and all three
-    returned callables are no-ops — only the agents' ``result.json`` sidecars are kept.
-    """
-    if log_path is None:
-        return (lambda _event: None), (lambda _text: None), (lambda: None)
-
-    log_fh = log_path.open("w", encoding="utf-8")
+    """Return (on_event, write, close). ``on_event`` always echoes the agent's output to the
+    console; the file handle is only written/opened when ``log_path`` is set (verbose runs)."""
+    log_fh = log_path.open("w", encoding="utf-8") if log_path is not None else None
 
     def write(text: str) -> None:
-        log_fh.write(text if text.endswith("\n") else text + "\n")
-        log_fh.flush()
+        if log_fh is not None:
+            log_fh.write(text if text.endswith("\n") else text + "\n")
+            log_fh.flush()
 
     def on_event(event: Any) -> None:
-        data = getattr(event, "data", None)
-        content = getattr(data, "content", None)
+        etype = getattr(getattr(event, "type", None), "value", None)
+        if etype not in _LOGGED_EVENT_TYPES:
+            return
+        content = getattr(getattr(event, "data", None), "content", None)
         if content:
             write(content)
 
-    return on_event, write, log_fh.close
+    return on_event, write, (log_fh.close if log_fh is not None else (lambda: None))
 
 
 async def run_session(client: Any, prompt: str, log_path: Path, *,
                       agent_config: dict[str, Any], agent_name: str,
-                      model: str | None, verbose: bool = False) -> None:
+                      model: str | None, verbose: bool = False,
+                      extra_skill_dirs: list[str] | None = None) -> None:
     """Run one fresh Copilot session for the given agent.
 
     When ``verbose`` is True, every event is streamed to ``log_path``; otherwise no log file
-    is written and only the agent's ``result.json`` sidecar is kept.
+    is written and only the agent's ``result.json`` sidecar is kept. ``extra_skill_dirs`` adds
+    skill directories beyond the bundled ones (e.g. curated toolkit skills).
     """
     from copilot import PermissionHandler  # type: ignore[import-not-found]
 
@@ -94,8 +97,10 @@ async def run_session(client: Any, prompt: str, log_path: Path, *,
         "custom_agents": [agent_config],
         "agent": agent_name,
     }
-    if SKILLS_DIR.is_dir():
-        kwargs["skill_directories"] = [str(SKILLS_DIR)]
+    skill_dirs = [str(SKILLS_DIR)] if SKILLS_DIR.is_dir() else []
+    skill_dirs += [d for d in (extra_skill_dirs or []) if Path(d).is_dir()]
+    if skill_dirs:
+        kwargs["skill_directories"] = skill_dirs
     if model:
         kwargs["model"] = model
     session = await client.create_session(**kwargs)

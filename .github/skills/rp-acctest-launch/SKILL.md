@@ -1,6 +1,6 @@
 ---
 name: rp-acctest-launch
-description: Capture the TeamCity main baseline for a Resource Provider and start a detached acceptance-test run, then exit. Use after upgrading an RP API version to kick off validation; pair with rp-acctest-collect to triage the results once the run finishes.
+description: Capture the TeamCity main baseline for a Resource Provider and start a detached acceptance-test run, then exit. Use after upgrading an RP API version to kick off validation; pair with rp-acctest-collect to investigate and report the results once the run finishes.
 ---
 
 # RP Acceptance Test Launch Skill
@@ -10,17 +10,14 @@ description: Capture the TeamCity main baseline for a Resource Provider and star
 Use this skill when you need to:
 
 - start a service's acceptance tests locally after an API-version upgrade,
-- capture the TeamCity `main` baseline that the later triage diffs against,
-- run a cheap **smoke gate** (each resource's `_basic`) before committing to the full suite.
+- capture the TeamCity `main` baseline that the later investigation diffs against.
 
 Acceptance tests create real Azure resources and can take many hours, so this skill only
-**launches** the run detached and exits — it never waits for results. Triage happens later with
-the `rp-acctest-collect` skill once the detached run finishes.
+**launches** the run detached and exits — it never waits for results. Investigation happens later
+with the `rp-acctest-collect` skill once the detached run finishes.
 
-To avoid spending many hours on a full run that a trivial regression would have caught, launch a
-**smoke gate first**: only the representative tests (each resource's `_basic`), and only launch
-the full suite once smoke is green. A `test_phase` input distinguishes `smoke` (restricted
-`-run`) from `full`.
+The launch runs the **whole suite** matching `test_regex` in one detached run; there is no smoke
+gate. Investigation is report-only (report NEW failures and API breaking changes; never fix).
 
 ## Required Inputs
 
@@ -29,10 +26,8 @@ the full suite once smoke is green. A `test_phase` input distinguishes `smoke` (
 ## Optional Inputs
 
 - `test_regex` (default `TestAcc`)
+- `parallel` — max acctests to run together via `go test -parallel N` (default `11`)
 - `teamcity_env` (default `PUBLIC`)
-- `test_phase` (`smoke` or `full`, default `smoke`): `smoke` runs only each resource's
-  `_basic` tests as a cheap gate; `full` runs the whole `test_regex` suite and must only be
-  launched after smoke is green.
 - `timeout` minutes for `TESTTIMEOUT` (default `0`, i.e. no Go test timeout)
 
 ## Required Environment
@@ -56,28 +51,35 @@ If any are missing, stop and report before creating any resources.
    - `--service` expands to `TF_AzureRM_AZURERM_SERVICE_<TEAMCITY_ENV_UPPER>_<SERVICE_UPPER>` (the `TF_AzureRM_` project prefix plus the `uniqueID` from `.teamcity/components/build_config_service.kt`). For a non-standard config, pass `--build-type <full_id>` instead.
    - Add `--status SUCCESS` to baseline only against the last green `main` build; omit it to use the latest build of any status.
    - If no build matches, the helper writes an empty baseline (`{}`) and exits `2` — note degraded mode (all failures treated as new) and continue.
-3. Choose the tests for this `test_phase` and build the `-run` filter. The first launch for a service is ALWAYS smoke, even if the input says `full` — a full first run wastes hours a trivial regression would have caught by the cheap gate:
-   - `full` → run the whole suite: `-run=<test_regex>`.
-   - `smoke` → enumerate top-level `func TestAcc…(t *testing.T)` in
-     `internal/services/<service_name>/*_test.go` matching `test_regex`, keep only names ending
-     in `_basic`, and build an anchored filter
-     `-run='^(<Name1>|<Name2>|...)$'` (record them in `.acctest-run/<service_name>/smoke_tests.txt`).
-     Fall back to `-run=<test_regex>` if none match.
-4. Launch the run DETACHED with the phase's `-run` filter, recording its PID so an external watcher can poll it:
+3. Build the `-run` filter for the FULL suite: just `<test_regex>` (the whole suite matching the
+   regex; the default `TestAcc` runs everything for the service). There is no smoke gate — run
+   the whole suite once. Keep the filter as the RAW RE2 pattern (no shell quotes here); step 4
+   adds the quoting.
+4. Launch the run DETACHED with that `-run` filter, recording its PID so an external watcher can poll it.
+
+   **Quoting is critical.** The `-run` pattern can contain `(`, `|`, and `$`, which are BOTH `make` and `/bin/sh` metacharacters. `make` expands `$(TESTARGS)` UNQUOTED into a `/bin/sh` (dash) command, so the pattern must carry its own quoting and escape `$` for `make`:
+   - keep the whole `TESTARGS=...` in SINGLE quotes at your shell,
+   - wrap the regex in DOUBLE quotes so dash treats `(` and `|` as literals,
+   - write every literal `$` in the regex as `$$` so `make` emits a single `$` (an un-doubled `$` is silently eaten).
+
+   So for the default full filter `TestAcc`, launch with (`-parallel <parallel>` caps how many
+   tests run concurrently; default `11`):
    ```bash
    nohup make acctests SERVICE='<service_name>' \
-     TESTARGS='-run=<run_filter> -json' TESTTIMEOUT='<timeout>m' \
+     TESTARGS='-run="TestAcc" -parallel <parallel> -json' TESTTIMEOUT='<timeout>m' \
      > .acctest-run/<service_name>/run.json \
      2> .acctest-run/<service_name>/run.err &
    echo $! > .acctest-run/<service_name>/run.pid
    ```
-   Record start time + phase + the `-run` filter in `.acctest-run/<service_name>/meta.json`. Report and exit the turn — **do not wait**.
+   (If `<test_regex>` contains RE2 metacharacters like `(`, `|`, or `$`, the double-quote + `$$`
+   rules above keep them intact through `make` → `/bin/sh`.)
+   Record start time + the `-run` filter in `.acctest-run/<service_name>/meta.json`. Report and exit the turn — **do not wait**.
 5. Leave all edits unstaged; never git commit/push/checkout. Write the result and EXIT.
 
 ## Command Hygiene (long/large output, real resources)
 
 - Always redirect acctest output to a file; never echo full logs or poll repeatedly.
-- Never block a turn on a multi-hour foreground command — launch detached and exit; triage in a later turn with `rp-acctest-collect`.
+- Never block a turn on a multi-hour foreground command — launch detached and exit; investigate in a later turn with `rp-acctest-collect`.
 - Keep scope to `service_name`; don't widen `-run` beyond need.
 - Surface (don't hide) missing-credential / auth errors before creating any resources.
 
@@ -85,12 +87,13 @@ If any are missing, stop and report before creating any resources.
 
 - All required env vars were verified present.
 - The TeamCity `main` baseline exists at `.acctest-run/<service_name>/baseline.json` (or degraded mode is noted).
-- The detached run is started, `run.pid` is written, and `meta.json` records the phase + `-run` filter.
+- The detached run is started, `run.pid` is written, and `meta.json` records the `-run` filter.
 - The turn exited without waiting for the run.
 
 ## Deliverables
 
-- service, `test_regex`, and the chosen `test_phase` + `-run` filter,
+- service, `test_regex`, and the chosen `-run` filter,
+- the `-parallel` value used,
 - `baseline_mode` (`normal`/`degraded`),
 - `pid_file` / `run_json` paths for the watcher,
 - a clear "launched" (or "failed", with the missing prerequisite) status.

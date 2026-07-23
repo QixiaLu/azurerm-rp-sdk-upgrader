@@ -36,9 +36,11 @@ on:
         type: boolean
         default: true
 
-# Lets the job push the result branch back to the fork.
+# permissions: the auto GITHUB_TOKEN only needs to READ this (runner) repo to check out
+# the upgrader tool. It grants NOTHING on the fork — the fork push is authenticated
+# separately by FORK_PUSH_TOKEN (a PAT with contents:write on the fork).
 permissions:
-  contents: write
+  contents: read
 
 # One in-flight run per (rp, version); don't cancel a run mid-provision.
 concurrency:
@@ -49,9 +51,9 @@ jobs:
   upgrade:
     runs-on: ubuntu-latest
     timeout-minutes: 720 # acctest provisions real resources and can run for hours
+    environment: COPILOT_TOKEN
     env:
-      # Copilot auth (a fine-grained PAT with Copilot access; also needs contents:write on
-      # the fork if you reuse it for the push step below).
+      # Copilot auth only — used inside the container for the SDK sessions.
       GH_TOKEN: ${{ secrets.COPILOT_TOKEN }}
       # Azure creds — only consumed when acctest runs (skip_acctest=false).
       ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
@@ -70,7 +72,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ inputs.fork_repo }}
-          token: ${{ secrets.COPILOT_TOKEN }} # needs contents:write on the fork to push back
+          token: ${{ secrets.FORK_PUSH_TOKEN }} # PAT with contents:write on the fork
           path: azurerm
           fetch-depth: 0
 
@@ -78,6 +80,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: upgrader-tool
+          submodules: recursive # brings in third_party/aii (the pinned toolkit)
 
       - name: Build the sandbox image
         run: docker build -t upgrader-sandbox upgrader-tool
@@ -94,6 +97,7 @@ jobs:
             "${{ inputs.rp_name }}" "${{ inputs.target_api_version }}" \
             --repo /workspace/azurerm \
             --model "${{ inputs.model }}" \
+            --verbose --with-toolkit \
             ${{ inputs.old_api_version != '' && format('--old-api-version {0}', inputs.old_api_version) || '' }} \
             ${{ inputs.skip_acctest && '--skip-acctest' || '' }}
 
@@ -112,8 +116,7 @@ jobs:
           git config user.name  "rp-upgrade-bot"
           git config user.email "rp-upgrade-bot@users.noreply.github.com"
           git checkout -b "$BRANCH"
-          # Keep the .upgrader/ run artifacts out of the pushed branch (optional).
-          git add -A -- ':!.upgrader' ':!.acctest-run'
+          git add -A
           if git diff --cached --quiet; then
             echo "No changes produced — nothing to push."
             exit 0
@@ -122,13 +125,14 @@ jobs:
           git push --force-with-lease -u origin "$BRANCH"
           echo "Pushed $BRANCH — open a PR from it for human review."
 
-      # Optional: also archive the per-run logs/result.json so a failed run is debuggable.
+      # Upload ALL per-run logs/result.json so any failed run is fully debuggable.
       - name: Upload run artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: upgrader-run-${{ inputs.rp_name }}-${{ inputs.target_api_version }}
           path: |
-            ${{ github.workspace }}/azurerm/.upgrader/**
-            ${{ github.workspace }}/azurerm/.acctest-run/**
-          if-no-files-found: ignore
+            ${{ github.workspace }}/azurerm/.upgrader
+            ${{ github.workspace }}/azurerm/.acctest-run
+          if-no-files-found: warn
+          include-hidden-files: true
