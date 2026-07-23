@@ -67,11 +67,10 @@ def _event_logger(log_path: Path | None):
 
     def on_event(event: Any) -> None:
         etype = getattr(getattr(event, "type", None), "value", None)
-        # if etype not in _LOGGED_EVENT_TYPES:
-        #     return
+        if etype not in _LOGGED_EVENT_TYPES:
+            return
         content = getattr(getattr(event, "data", None), "content", None)
         if content:
-            print(content)
             write(content)
 
     return on_event, write, (log_fh.close if log_fh is not None else (lambda: None))
