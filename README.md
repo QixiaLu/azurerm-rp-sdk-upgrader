@@ -40,39 +40,15 @@ flaky acceptance run never fails a run whose upgrade converged.
 Only the **upgrade** decides success; the acctest stage is advisory and never changes the exit
 code.
 
-## Install
+## Prerequisites
 
-The supported way to run is the bundled sandbox image — it ships Python, Go, `make`, `git`,
-the `gh` CLI, and Terraform, so the only host requirement is Docker:
-
-```pwsh
-docker build -t upgrader-sandbox .
-```
-
-<details>
-<summary>Run on the host instead of Docker</summary>
-
-```pwsh
-python -m pip install -e .
-# or run without installing:
-$env:PYTHONPATH="."; python -m upgrader --help
-```
-
-Requires Python ≥ 3.9 and, for real runs, these tools on `PATH`: `copilot`, `go`, `make`,
-`gh`, `git`.
-
-</details>
-
-## The ai-assisted-development toolkit (opt-in)
-
-The upgrade agent can enrich its context with the
-[`terraform-azurerm-ai-assisted-development`](https://github.com/WodansSon/terraform-azurerm-ai-assisted-development)
-toolkit — **without installing it into your checkout**. It's **off by default**; pass
-`--with-toolkit` to enable it. The toolkit rides along as a pinned git submodule at
-`submodule/aii` (currently `v3.7.0`), and when enabled [toolkit.py](upgrader/toolkit.py) loads
-an **explicit allow-list** into the upgrade session only: six migration/implementation instruction
-files (embedded into the prompt) and the `acceptance-testing` skill (via `skill_directories`). Without `--with-toolkit` (or when the submodule isn't
-initialised) the upgrade proceeds on the agent's own self-contained `rp-api-upgrade` skill.
+- **Docker** — the only hard requirement for the supported (sandboxed) path; the image bundles
+  Python, Go, `make`, `git`, the `gh` CLI, and Terraform.
+- **Git** — to clone this repo (with `--recurse-submodules`) and to mount/review your
+  `terraform-provider-azurerm` checkout.
+- **A GitHub token** (`GH_TOKEN` / `GITHUB_TOKEN`) with Copilot access, passed via `--env-file`.
+- **Azure + TeamCity credentials** — only for acctest runs (skip with `--skip-acctest`); see
+  [Required environment](#required-environment).
 
 ## Local Usage
 
