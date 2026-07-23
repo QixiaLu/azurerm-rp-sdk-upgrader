@@ -1,13 +1,12 @@
-You are ONE turn of an automated acceptance-test triage loop with a FRESH context. State
-lives on disk: trust only the files under the acctest run directory and the code on disk.
-This is the LAUNCH phase — start the detached test run, then EXIT. Do not wait for results.
+You are ONE turn of an automated acceptance-test run with a FRESH context. State lives on disk:
+trust only the files under the acctest run directory and the code on disk. This is the LAUNCH
+phase — start the detached FULL-suite test run, then EXIT. Do not wait for results.
 
 Inputs:
   service_name: <rp_name>
   test_regex: <test_regex>
+  parallel: <parallel>
   acctest_dir: <acctest_dir>
-  test_phase: <test_phase>       # "smoke" (each resource's _basic) or "full" (whole suite)
-  phase_scope: <phase_scope>
 
 Follow the rp-acctest-launch skill:
 
@@ -26,36 +25,30 @@ Follow the rp-acctest-launch skill:
        --service '<rp_name>' --output <acctest_dir>/baseline.json
    If no build matches it writes an empty baseline and exits 2 — note degraded mode and continue.
 
-3. Build the -run filter for THIS `test_phase` (see the skill's launch step 3 for the exact
-   enumeration). The first launch for a service is ALWAYS smoke, even if the input says "full" —
-   a full first run wastes hours a trivial regression would have caught by the cheap gate:
-   - smoke: the `_basic` entrypoints matching test_regex, as an anchored RE2 pattern
-     `^(<Name1>|...)$`, recorded in <acctest_dir>/smoke_tests.txt (fall back to `<test_regex>`
-     if none match).
-   - full: the whole suite, `<test_regex>`; launch only after smoke is green.
-   Keep the filter as the RAW RE2 pattern (no shell quotes); step 4 adds the quoting.
+3. Build the -run filter for the FULL suite: just `<test_regex>` (the whole suite). There is no
+   smoke gate — run everything once. Keep the filter as the RAW RE2 pattern (no shell quotes);
+   step 4 adds the quoting.
 
-4. Launch the run DETACHED with the phase's -run filter, recording its PID so an external
-   watcher can poll it. Disable the Go test timeout (TESTTIMEOUT=0) so a long suite is never
-   cut off. QUOTING IS CRITICAL: the pattern's `(`, `|`, and `$` are both `make` and `/bin/sh`
-   metacharacters, and `make` expands $(TESTARGS) UNQUOTED into a dash command. So keep
-   TESTARGS in SINGLE quotes, wrap the regex in DOUBLE quotes (so dash treats `(`/`|` as
-   literal), and double every literal `$` as `$$` (so `make` emits one `$`; an un-doubled `$`
-   is silently eaten, dropping the anchor). Substitute the raw pattern from step 3 for
-   <run_filter> and its `$`-doubled form for <run_filter_$$>:
+4. Launch the run DETACHED with that -run filter, recording its PID so an external watcher can
+   poll it. Disable the Go test timeout (TESTTIMEOUT=0) so a long suite is never cut off.
+   QUOTING IS CRITICAL: `make` expands $(TESTARGS) UNQUOTED into a `/bin/sh` (dash) command, and
+   a `-run` pattern can contain `(`, `|`, and `$` (dash + make metacharacters). So keep TESTARGS
+   in SINGLE quotes, wrap the regex in DOUBLE quotes (dash then treats `(`/`|` as literal), and
+   double every literal `$` as `$$` (so `make` emits one `$` instead of eating it). Also cap the
+   concurrency with `-parallel <parallel>` (how many tests run together; default 11). Substitute
+   the pattern from step 3 for <run_filter> (writing any literal `$` as `$$`):
      nohup make acctests SERVICE='<rp_name>' \
-       TESTARGS='-run="<run_filter_$$>" -json' TESTTIMEOUT='0' \
+       TESTARGS='-run="<run_filter>" -parallel <parallel> -json' TESTTIMEOUT='0' \
        > <acctest_dir>/run.json 2> <acctest_dir>/run.err &
      echo $! > <acctest_dir>/run.pid
-   e.g. TESTARGS='-run="^(TestAccFoo_basic|TestAccBar_basic)$$" -json'.
-   Record start time + phase + the -run filter in <acctest_dir>/meta.json. Then REPORT and
-   EXIT — do not wait.
+   e.g. TESTARGS='-run="TestAcc" -parallel <parallel> -json'.
+   Record start time + the -run filter in <acctest_dir>/meta.json. Then REPORT and EXIT — do not
+   wait.
 
 5. Leave all edits unstaged; never git commit/push/checkout. Write result.json and EXIT.
 
 When finished, write a single JSON object to <result_path> with: "stage": "acctest",
-"phase": "launch", "test_phase" ("smoke"/"full"), "status" ("launched"/"failed"),
-"summary", "pid_file", "run_json", "run_filter", "baseline_mode" ("normal"/"degraded"),
-"test_regex". "test_phase" is MANDATORY — it is how the collect turn knows which gate ran; set it
-to the phase actually launched (which is "smoke" on the first launch regardless of input).
-Set status="launched" only once the detached run is started and run.pid is written.
+"phase": "launch", "status" ("launched"/"failed"), "summary", "pid_file", "run_json",
+"run_filter", "parallel", "baseline_mode" ("normal"/"degraded"), "test_regex".
+Set status="launched" only once the detached run is started and run.pid is written; set
+status="failed" (with the reason) if preflight fails or `make acctests` did not start.

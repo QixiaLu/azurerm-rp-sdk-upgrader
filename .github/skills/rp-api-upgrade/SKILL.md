@@ -36,22 +36,27 @@ Use this skill when you need to:
 3. Update imports to the target API version, per sub-package — the client (`client/client.go`) and resource/data-source files. Preserve intentional overrides under `azuresdkhacks/`.
 4. Sync the vendor directory: `go mod tidy` then `go mod vendor` so the now-imported target sub-package is pulled into `vendor/` (and any step-2 bump is applied). Long-running; see command hygiene. Confirm with a single path check.
 5. Update impacted symbols.
-6. Run a breaking-change assessment using `contributing/topics/guide-breaking-changes.md`:
-   - confirm suspected changes against the **target API version** — query **Microsoft Learn MCP** (`microsoft_docs_search` / `microsoft_docs_fetch`) for the RP's REST reference / "what's new" / changelog at `<target_api_version>`, and diff the **swagger** in `Azure/azure-rest-api-specs` (`specification/<rp>/resource-manager/**/<target_api_version>/`) for the affected property (`type`/`required`/`default`/`enum`/`x-ms-*`/response shape) so changed defaults/enums/required-fields are caught even when they compile cleanly,
-   - classify changes: resource/data source removal, schema rename/type/default/validation changes, behavior/default-value changes,
-   - mitigate where possible as instructed in the repo's `contributing/topics/guide-breaking-changes.md`,
-   - for unavoidable changes, apply transitional patterns (deprecation messaging, `features.FivePointOh()` gating, conditional registration, and staged tests),
-   - add required docs follow-up (upgrade guide and resource/data source docs) when behavior is user-visible.
+6. Run a breaking-change assessment:
+   - confirm suspected changes against the **target API version** — cross-check the REST
+     reference/changelog (e.g. Microsoft Learn MCP) and diff the **swagger** in
+     `Azure/azure-rest-api-specs` for the affected property (`type`/`required`/`default`/`enum`/
+     `x-ms-*`/response shape) so changed defaults/enums/required-fields are caught even when they
+     compile cleanly,
+   - classify changes: resource/data source removal, schema rename/type/default/validation
+     changes, behavior/default-value changes,
+   - mitigate as instructed in the repo's `contributing/topics/guide-breaking-changes.md`; for
+     unavoidable changes apply transitional patterns (deprecation messaging, `features.FivePointOh()`
+     gating, conditional registration, staged tests),
+   - add required docs follow-up (upgrade guide and resource/data source docs) when behavior is
+     user-visible.
 7. Compile and iterate:
    - `go build ./internal/services/<rp_name>/...`
    - fix errors until the RP package compiles.
 8. Validate full provider build:
    - `go build ./...`
-9. If `target_api_version` is a preview version, run `go run internal/tools/preview-api-version-linter/main.go` and follow the exceptions path in `contributing/topics/guide-api-version.md`.
-10. Format everything AFTER all edits are done — run the repo's make targets from the repo root, not per-file tools:
+9. Format everything AFTER all edits are done — run the repo's make targets from the repo root, not per-file tools:
     - `make fmt` (gofmt/gofumpt + goimports over the Go code),
-    - `make terrafmt` (formats the embedded Terraform HCL in acceptance tests and docs).
-    Re-run `go build ./...` once more if formatting touched anything, and never hand-format `vendor/`.
+    - `make document-fix` — ALWAYS run this; it regenerates the docs (including the API version they reference), so run it even when you edited no docs by hand. Never skip it or mark it "N/A".
 
 ## Heuristics
 
@@ -77,12 +82,13 @@ Use this skill when you need to:
 - No unresolved compile errors from the upgrade.
 - Breaking changes are either mitigated according to `contributing/topics/guide-breaking-changes.md` or captured as explicit follow-up actions.
 - `go build ./...` return exit code `0`.
-- Code is formatted with `make fmt` and `make terrafmt` after all edits (run from the repo root).
+- Code is formatted with `make fmt` after all edits, and `make document-fix` is ALWAYS run (regenerates docs incl. the API version) — both from the repo root.
 - If `go-azure-sdk` was bumped, the new version is the minimum that ships the target API (noted in deliverables); any `vendor/` changes are from that bump only.
 
 ## Deliverables
 
 - concise change summary,
+- API-version delta: the notable differences the target API version introduced vs the old one (newly added fields, removed/renamed properties, changed defaults/enums, behavior changes), from the old-vs-target SDK model diff and the breaking-change evidence already gathered,
 - modified file list (summarize `vendor/` sync as a count; note whether `go-azure-sdk` was bumped and to which version),
 - breaking-change assessment and mitigation/deprecation plan,
 - final build/vet commands + outcome,

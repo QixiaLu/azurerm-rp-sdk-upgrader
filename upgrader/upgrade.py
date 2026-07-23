@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from upgrader import toolkit
 from upgrader.session import fill_prompt, read_result, run_session
 
 PROMPT_FILE = Path(__file__).resolve().parent / "prompts" / "PROMPT.md"
@@ -33,12 +34,18 @@ AGENT_CONFIG = {
 }
 
 
-def build_prompt(rp_name: str, target: str, old: str | None, result_path: Path) -> str:
+def build_prompt(rp_name: str, target: str, old: str | None, result_path: Path,
+                 with_toolkit: bool = False) -> str:
+    if with_toolkit:
+        guidance = toolkit.instructions_text() or "(ai-assisted-development toolkit not available)"
+    else:
+        guidance = "(toolkit guidance not requested; run with --with-toolkit to include it)"
     return fill_prompt(PROMPT_FILE, {
         "<rp_name>": rp_name,
         "<target_api_version>": target,
         "<old_api_version>": old or "(detect current)",
         "<result_path>": result_path.as_posix(),
+        "<toolkit_guidance>": guidance,
     })
 
 
@@ -53,6 +60,7 @@ def plan_seed(rp_name: str, target: str, old: str | None) -> str:
         "- [ ] go mod tidy && go mod vendor.",
         "- [ ] Assess and Address breaking change as instructed in `contributing/topics/guide_breaking_change.md`",
         "- [ ] Fix compile errors until `go build ./...` is green.",
+        "- [ ] make fmt, then ALWAYS make document-fix (refreshes docs incl. API version; never skip as N/A)."
         "",
         "## Notes",
         "- (iterations append findings here)",
@@ -64,22 +72,45 @@ def build_passed(result_path: Path) -> bool:
     return data.get("status") == "done" and data.get("build_passed") is True
 
 
+def _print_api_changes(result_path: Path) -> None:
+    """Surface the target API version's notable changes (new fields, etc.) from result.json."""
+    changes = read_result(result_path).get("api_changes") or []
+    if not changes:
+        return
+    print(f"API-version changes ({len(changes)}):")
+    for c in changes:
+        if isinstance(c, dict):
+            kind, symbol, detail = c.get("kind", "?"), c.get("symbol", ""), c.get("detail", "")
+            print(f"  - [{kind}] {symbol}: {detail}".rstrip(": "))
+        else:
+            print(f"  - {c}")
+
+
 async def run_upgrade(client, run_dir: Path, *, rp_name: str, target: str, old: str | None,
-                      max_iterations: int, model: str | None, verbose: bool = False) -> bool:
-    """Ralph loop on an already-started client: iterate until the build is green."""
+                      model: str | None, verbose: bool = False,
+                      with_toolkit: bool = False) -> bool:
+    """Ralph loop on an already-started client: iterate until the build is green.
+
+    ``with_toolkit`` opts into injecting the allow-listed ai-assisted-development toolkit content
+    (instructions embedded in the prompt, skills via ``skill_directories``). Off by default.
+    """
     result_path = run_dir / RESULT_FILE
     plan_path = run_dir / PLAN_FILE
     if not plan_path.exists():
         plan_path.write_text(plan_seed(rp_name, target, old), encoding="utf-8")
-    prompt = build_prompt(rp_name, target, old, result_path)
+    prompt = build_prompt(rp_name, target, old, result_path, with_toolkit=with_toolkit)
 
-    for i in range(1, max_iterations + 1):
-        print(f"=== upgrade iteration {i}/{max_iterations} ===")
-        await run_session(client, prompt, run_dir / f"upgrade.iter-{i:02d}.log",
-                          agent_config=AGENT_CONFIG, agent_name=AGENT_NAME, model=model,
-                          verbose=verbose)
-        if build_passed(result_path):
-            print(f"build green after {i} iteration(s); logs in {run_dir}")
-            return True
-    print(f"reached max_iterations={max_iterations} without a green build")
-    return build_passed(result_path)
+    extra_skill_dirs = None
+    if with_toolkit:
+        skills = toolkit.skills_dir()
+        extra_skill_dirs = [str(skills)] if skills else None
+    await run_session(client, prompt, run_dir / "upgrade.log",
+                        agent_config=AGENT_CONFIG, agent_name=AGENT_NAME, model=model,
+                        verbose=verbose, extra_skill_dirs=extra_skill_dirs)
+    if build_passed(result_path):
+        print(f"build green; logs in {run_dir}")
+        _print_api_changes(result_path)
+        return True
+    else:
+        print("build failed;")
+        return False

@@ -1,16 +1,24 @@
 # upgrader
 
-A minimal CLI that runs a **"Ralph loop"** to upgrade one Azure Resource Provider's
-**SDK API version** in `terraform-provider-azurerm`, then triages its acceptance tests:
+A minimal CLI that upgrades one Azure Resource Provider's
+**SDK API version** in `terraform-provider-azurerm`, then runs its acceptance tests once and
+**reports** what broke:
 
 ```
-upgrade  →  acctest triage
+upgrade  →  acctest investigation (advisory)
 (rp-api-upgrade)  (rp-acctest-launch + rp-acctest-collect)
 ```
 
 It runs all work **directly in the provided checkout** and **never** commits, pushes,
 switches the branch, or opens a PR — every change is left unstaged in the working tree for
 human review.
+
+The two stages have deliberately different roles. The **upgrade** stage does the fix work end
+to end against fast, objective feedback (`go build`). The **acctest** stage is
+**diagnose-only**: it runs the full suite once, diffs NEW failures against the TeamCity `main`
+baseline, and writes a categorized report (in particular, suspected **API breaking changes**)
+for a human to act on. It never edits code, never re-runs tests, and is **advisory** — a slow
+or flaky acceptance run never fails a run whose upgrade converged.
 
 ## How it works
 
@@ -30,10 +38,13 @@ human review.
 
 ### The two stages
 
-| Stage | Loop | "Done" means |
+| Stage | Flow | "Done" means |
 | ----- | ---- | ------------ |
-| **upgrade** ([upgrade.py](upgrader/upgrade.py)) | fresh session per iteration until `result.json` reports a green `go build ./...` | build is green |
-| **acctest** ([acctest.py](upgrader/acctest.py)) | rounds of *launch → watch detached PID → collect/fix*, re-running the full suite after each fix | a round finishes triage with no new fixes |
+| **upgrade** ([upgrade.py](upgrader/upgrade.py)) | single session that edits the RP until `result.json` reports a green `go build ./...` | build is green |
+| **acctest** ([acctest.py](upgrader/acctest.py)) | single pass: *launch full suite → watch detached PID → investigate & report* (no loop, no code edits) | the run finished and every NEW-vs-baseline failure is classified in a report |
+
+Only the **upgrade** decides success. The acctest stage is **advisory**: it writes its report
+as an artifact and never changes the exit code.
 
 ## Install
 
@@ -58,6 +69,26 @@ Requires Python ≥ 3.9 and, for real runs, these tools on `PATH`: `copilot`, `g
 
 </details>
 
+## The ai-assisted-development toolkit (opt-in)
+
+The upgrade agent can enrich its context with the community
+[`terraform-azurerm-ai-assisted-development`](https://github.com/WodansSon/terraform-azurerm-ai-assisted-development)
+toolkit — **without installing it into your checkout**. It's **off by default**; pass
+`--with-toolkit` to enable it. The toolkit rides along as a pinned git submodule at
+`third_party/aii` (currently `v3.7.0`), and when enabled [toolkit.py](upgrader/toolkit.py) loads
+an **explicit allow-list** into the upgrade session only: six migration/implementation instruction
+files (embedded into the prompt) and the `acceptance-testing` skill (via `skill_directories`).
+Nothing is written to your `--repo`, so `git status` stays clean and none of the toolkit's
+review/docs fleet pollutes the session. Without `--with-toolkit` (or when the submodule isn't
+initialised) the upgrade proceeds on the agent's own self-contained `rp-api-upgrade` skill.
+
+Clone with submodules (or run `git submodule update --init` afterwards):
+
+```pwsh
+git clone --recurse-submodules <this-repo>
+# bump the toolkit later: git -C third_party/aii checkout vX.Y.Z && git add third_party/aii && git commit
+```
+
 ## Usage
 
 Mount your `terraform-provider-azurerm` checkout at `/workspace/azurerm` and pass it as
@@ -70,7 +101,7 @@ docker run --rm --env-file .env `
   upgrader-sandbox `
   keyvault 2023-07-01 --repo /workspace/azurerm --skip-acctest
 
-# Full run: upgrade, then acctest triage:
+# Full run: upgrade, then run the acctest suite once and report:
 docker run --rm --env-file .env `
   -v "C:\Repos\terraform-provider-azurerm:/workspace/azurerm" `
   upgrader-sandbox `
@@ -91,11 +122,11 @@ docker compose run --rm upgrader keyvault 2023-07-01 --repo /workspace/azurerm -
 | ---- | ------- |
 | `--repo` (required) | Path to the `terraform-provider-azurerm` working tree. |
 | `--old-api-version` | Current version to upgrade from (default: detect). |
-| `--max-iterations` | Upgrade-loop cap (default: 15). |
-| `--skip-acctest` | Stop after the build is green. |
-| `--test-regex` | Acctest `-run` filter (default: `TestAcc`). |
-| `--acctest-rounds` | Max trigger→fix→rerun rounds (default: 3). |
+| `--skip-acctest` | Stop after the build is green; skip acceptance-test investigation. |
+| `--test-regex` | Acctest `-run` filter for the full suite (default: `TestAcc`). |
 | `--model` | Copilot model (e.g. `claude-sonnet-4.5`). |
+| `--with-toolkit` | Inject the allow-listed ai-assisted-development toolkit content (migration instructions + `acceptance-testing` skill). Off by default. |
+| `-v`, `--verbose` | Write per-turn event logs to disk (otherwise only `result.json` is kept). |
 
 ## Required environment
 
@@ -105,8 +136,6 @@ docker compose run --rm upgrader keyvault 2023-07-01 --repo /workspace/azurerm -
 - **TeamCity baseline (acctest):** `TEAMCITY_TOKEN` (or `TEAMCITY_ACCESSTOKEN`),
   optional `TEAMCITY_SERVER_URL`
 
-> Acceptance tests provision **real Azure resources** that cost money and can run for hours.
-
 ## Module map
 
 | Module | Responsibility |
@@ -114,8 +143,9 @@ docker compose run --rm upgrader keyvault 2023-07-01 --repo /workspace/azurerm -
 | [cli.py](upgrader/cli.py) | argparse surface; single `run` entry. |
 | [loop.py](upgrader/loop.py) | Chains the upgrade and acctest stages; owns a Copilot client per stage. |
 | [session.py](upgrader/session.py) | Fresh Copilot session per turn, no-VCS guard, per-turn event log. |
-| [upgrade.py](upgrader/upgrade.py) | Upgrade Ralph loop until `go build ./...` is green. |
-| [acctest.py](upgrader/acctest.py) | Acctest triage: launch → watch detached PID → collect/fix rounds. |
+| [toolkit.py](upgrader/toolkit.py) | Loads an explicit allow-list from the `third_party/aii` toolkit submodule (6 instruction files embedded in the prompt + the `acceptance-testing` skill via `skill_directories`); never writes to the checkout. |
+| [upgrade.py](upgrader/upgrade.py) | Upgrade stage: one session that edits the RP until `go build ./...` is green. |
+| [acctest.py](upgrader/acctest.py) | Acctest investigation: launch full suite → watch detached PID → investigate & report (advisory, no code edits). |
 
 Prompt bodies live under [upgrader/prompts/](upgrader/prompts) as `PROMPT.md`,
 `PROMPT_ACCTEST_LAUNCH.md`, and `PROMPT_ACCTEST_COLLECT.md`. See

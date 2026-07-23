@@ -80,6 +80,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: upgrader-tool
+          submodules: recursive # brings in third_party/aii (the pinned toolkit)
 
       - name: Build the sandbox image
         run: docker build -t upgrader-sandbox upgrader-tool
@@ -96,7 +97,7 @@ jobs:
             "${{ inputs.rp_name }}" "${{ inputs.target_api_version }}" \
             --repo /workspace/azurerm \
             --model "${{ inputs.model }}" \
-            --verbose \
+            --verbose --with-toolkit \
             ${{ inputs.old_api_version != '' && format('--old-api-version {0}', inputs.old_api_version) || '' }} \
             ${{ inputs.skip_acctest && '--skip-acctest' || '' }}
 

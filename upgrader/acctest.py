@@ -1,21 +1,20 @@
-"""Acceptance-test triage stage: a cheap smoke gate, then the full suite. Fresh-only.
+"""Acceptance-test stage: run the full suite ONCE, then investigate & report. Advisory only.
 
-To avoid burning many hours on a full run that a trivial regression would have caught, the
-stage runs in two phases, each a launch -> wait -> collect round loop:
+This stage never edits code and never loops. After an API-version upgrade it launches the full
+acceptance-test suite, waits for the detached run to finish, then runs a single collect turn
+that diffs NEW failures against the TeamCity `main` baseline and INVESTIGATES each one — in
+particular whether the target API version introduced a breaking change — and writes a
+categorized report for a human to act on. It never mitigates or fixes anything, and its result
+is ADVISORY: the upgrade's green `go build` alone decides the pipeline's success.
 
-  1. SMOKE — only the representative tests (each resource's ``_basic``).
-     Triage and fix here until green; this is fast and catches most upgrade breakage.
-  2. FULL — the whole suite, run ONLY once smoke is green.
-
-Each round re-runs its phase's suite (so prior-round fixes are re-verified), and the loop stops
-early once a round finishes triage with no new fixes. State lives on disk; sessions never
-re-attach to a prior run.
+State lives on disk; the session is fresh and never re-attaches to a prior run.
 """
 
 from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import time
 from pathlib import Path
 from typing import Any
@@ -33,87 +32,50 @@ HEARTBEAT_EVERY = 5
 LAUNCH_AGENT_NAME = "rp-acctest-launch"
 COLLECT_AGENT_NAME = "rp-acctest-collect"
 
-# Which tests make up the cheap smoke gate: every resource's basic-CRUD and requires-import
-# tests. The launch agent intersects this with test_regex to build the smoke -run filter.
-SMOKE_SELECTOR = "_basic tests (basic CRUD + import) for each resource"
-
-# Launch agent: capture the TeamCity main baseline, then start a detached `make acctests` run
-# and exit — it never waits for results (a suite can take many hours).
+# Launch agent: capture the TeamCity main baseline, then start a detached full-suite
+# `make acctests` run and exit — it never waits for results (a suite can take many hours).
 LAUNCH_AGENT_CONFIG = {
     "name": LAUNCH_AGENT_NAME,
     "display_name": "RP Acctest Launch",
-    "description": "Capture the TeamCity baseline and start a detached acceptance-test run, then exit.",
+    "description": "Capture the TeamCity baseline and start a detached full acceptance-test run, then exit.",
     "skills": [LAUNCH_AGENT_NAME],
     "prompt": (
-        "You are a senior Terraform provider engineer launching acceptance tests after an API "
-        "upgrade. Never block — tests take hours. Capture the TeamCity main baseline (reuse it "
-        "if already present), start a detached `make acctests` run for the chosen phase, record "
-        "run.pid, and EXIT. Do not wait for results. Never modify go.mod/vendor."
+        "You are a senior Terraform provider engineer launching the full acceptance-test suite "
+        "after an API upgrade. Never block — tests take hours. Capture the TeamCity main "
+        "baseline (reuse it if already present), start a detached `make acctests` run for the "
+        "whole suite, record run.pid, and EXIT. Do not wait for results. Never modify "
+        "go.mod/vendor."
     ),
 }
 
-# Collect agent: diff NEW failures vs the baseline, fix test-side breakages in *_test.go, and
-# mitigate genuine breaking changes in resource/schema code strictly per the guide.
+# Collect agent: diff NEW failures vs the baseline and INVESTIGATE each — is it a target-API
+# breaking change, a test-side expectation, an API bug, or a flake? REPORT only; never edit code.
 COLLECT_AGENT_CONFIG = {
     "name": COLLECT_AGENT_NAME,
     "display_name": "RP Acctest Collect",
-    "description": "Triage a finished acceptance-test run: diff against baseline, fix test-side failures, mitigate breaking changes.",
+    "description": "Investigate a finished acceptance-test run: diff against baseline and report NEW failures and API breaking changes. Never edits code.",
     "skills": [COLLECT_AGENT_NAME],
     "prompt": (
-        "You are a senior Terraform provider engineer triaging a finished acceptance-test run. "
-        "Compute NEW failures = local FAIL minus the TeamCity baseline, fix test-side issues in "
-        "*_test.go, and mitigate genuine breaking changes in resource/schema code STRICTLY per "
-        "contributing/topics/guide-breaking-changes.md (feature-flag gated + upgrade-guide "
-        "entry), reporting each with evidence. Never modify go.mod/vendor."
+        "You are a senior Terraform provider engineer investigating a finished acceptance-test "
+        "run after an API upgrade. Compute NEW failures = local FAIL minus the TeamCity "
+        "baseline, and for each diagnose the root cause — in particular whether the target API "
+        "version introduced a breaking change (confirm against Microsoft Learn + "
+        "azure-rest-api-specs). REPORT every finding with evidence. Do NOT edit any code, tests, "
+        "go.mod, or vendor — this is investigation only."
     ),
 }
 
 
 def _build_prompt(prompt_file: Path, rp_name: str, *, test_regex: str,
-                  acctest_dir: Path, result_path: Path, phase: str, phase_scope: str) -> str:
+                  acctest_dir: Path, result_path: Path, parallel: int | None = None) -> str:
     """Substitute placeholders into an acctest launch/collect prompt body."""
     return fill_prompt(prompt_file, {
         "<rp_name>": rp_name,
         "<test_regex>": test_regex,
+        "<parallel>": str(parallel if parallel is not None else 11),
         "<acctest_dir>": acctest_dir.as_posix(),
         "<result_path>": result_path.as_posix(),
-        "<phase>": phase,
-        "<phase_scope>": phase_scope,
     })
-
-
-# The collect agent declares its control-flow intent as ``loop_action`` (see
-# PROMPT_ACCTEST_COLLECT.md). The loop re-runs ONLY on ``reverify``; every other value stops,
-# and ``converged`` is the only success. The distinct stop reasons (api_bug / tool_error /
-# needs_human) differ only in what we log — the per-test detail that justifies them lives in
-# the collect result.json, so Python keeps just the label.
-REVERIFY = "reverify"        # applied fixes (or triage unfinished) -> run another round (CONTINUE)
-CONVERGED = "converged"      # suite green, nothing left to change -> STOP, success
-INCOMPLETE = "incomplete"    # used up max_rounds while still applying fixes -> STOP
-_STOP_ACTIONS = {CONVERGED, "api_bug", "tool_error", "needs_human"}
-
-
-def _loop_action(result: dict[str, Any]) -> str:
-    """One finished collect round's control-flow intent — the single signal for the
-    launch->wait->collect loop. Trust the agent's declared ``loop_action`` (it understands the
-    Go/Azure failure semantics; Python does not); if it's missing/unrecognized (older/partial
-    result), derive it from the raw signals so a dropped field never stalls the loop."""
-    action = result.get("loop_action")
-    if action == REVERIFY or action in _STOP_ACTIONS:
-        return action
-    status = result.get("status")
-    if status == "blocked" or result.get("api_bugs"):
-        return "api_bug"
-    if status == "failed":
-        return "tool_error"
-    if result.get("fixed") or any(bc.get("mitigated") for bc in result.get("breaking_changes", [])):
-        return REVERIFY
-    if status == "done":
-        return CONVERGED
-    # Nothing changed and no hard stop: only non-actionable failures remain (env/quota/flake)
-    # or breaking changes deferred to a human. Re-running the identical suite would just
-    # reproduce them, so stop rather than burn another multi-hour run.
-    return "needs_human"
 
 
 # --- detached-run watch (PID-based, fresh-only: never re-attaches) -------------------
@@ -186,83 +148,92 @@ async def _wait(acctest_dir: Path, log) -> None:
     log("detached run finished")
 
 
-async def _run_phase(client, run_dir: Path, acctest_dir: Path, *, rp_name: str,
-                     test_regex: str, phase: str, phase_scope: str, max_rounds: int,
-                     model: str | None, verbose: bool = False) -> str:
-    """Run one phase's (launch -> wait -> collect/fix) round loop.
-
-    Returns the collect round's ``loop_action`` (``converged`` / ``api_bug`` / ``tool_error`` /
-    ``needs_human``), or ``incomplete`` when it ran out of rounds while still applying fixes.
-    Only ``converged`` is success.
-    """
-    launch_result = run_dir / f"acctest.{phase}.launch.result.json"
-    collect_result = run_dir / f"acctest.{phase}.result.json"
-    launch_prompt = _build_prompt(
-        LAUNCH_PROMPT_FILE, rp_name, test_regex=test_regex, acctest_dir=acctest_dir,
-        result_path=launch_result, phase=phase, phase_scope=phase_scope)
-    collect_prompt = _build_prompt(
-        COLLECT_PROMPT_FILE, rp_name, test_regex=test_regex, acctest_dir=acctest_dir,
-        result_path=collect_result, phase=phase, phase_scope=phase_scope)
-
-    for rnd in range(1, max_rounds + 1):
-        print(f"=== acctest [{phase}] round {rnd}/{max_rounds}: launch ===")
-        await run_session(client, launch_prompt, run_dir / f"acctest.{phase}.launch.r{rnd:02d}.log",
-                          agent_config=LAUNCH_AGENT_CONFIG, agent_name=LAUNCH_AGENT_NAME, model=model,
-                          verbose=verbose)
-
-        print(f"=== acctest [{phase}] round {rnd}: waiting for detached run in {acctest_dir} ===")
-        wait_fh = (run_dir / f"acctest.{phase}.wait.r{rnd:02d}.log").open("w", encoding="utf-8") if verbose else None
-        try:
-            def log(msg: str) -> None:
-                line = f"[{time.strftime('%H:%M:%S')}] {msg}"
-                print(line)
-                if wait_fh is not None:
-                    wait_fh.write(line + "\n")
-                    wait_fh.flush()
-            await _wait(acctest_dir, log)
-        finally:
-            if wait_fh is not None:
-                wait_fh.close()
-
-        print(f"=== acctest [{phase}] round {rnd}: collect/fix ===")
-        await run_session(client, collect_prompt, run_dir / f"acctest.{phase}.collect.r{rnd:02d}.log",
-                          agent_config=COLLECT_AGENT_CONFIG, agent_name=COLLECT_AGENT_NAME, model=model,
-                          verbose=verbose)
-
-        result = read_result(collect_result)
-        action = _loop_action(result)
-        if action == REVERIFY:
-            print(f"acctest [{phase}] round {rnd} applied fixes; re-running suite to verify.")
-            continue
-        if action == CONVERGED:
-            print(f"acctest [{phase}] clean after {rnd} round(s); logs in {run_dir}")
-        else:
-            print(f"acctest [{phase}] stopping at round {rnd} ({action}); see {collect_result}")
-        return action
-
-    print(f"acctest [{phase}] reached max_rounds={max_rounds} while still fixing; see {collect_result}")
-    return INCOMPLETE
-
-
 async def run_acctest(client, run_dir: Path, acctest_dir: Path, *, rp_name: str,
-                      test_regex: str, max_rounds: int,
-                      model: str | None, verbose: bool = False) -> bool:
-    """Smoke gate, then full suite. The expensive full run happens only if smoke is green."""
-    print("=== acctest: SMOKE phase (representative tests first) ===")
-    smoke = await _run_phase(
-        client, run_dir, acctest_dir, rp_name=rp_name, test_regex=test_regex,
-        phase="smoke", phase_scope=SMOKE_SELECTOR, max_rounds=max_rounds, model=model,
-        verbose=verbose)
-    if smoke != CONVERGED:
-        print(f"smoke phase did not converge ({smoke}); NOT running the full suite. "
-              f"see logs in {run_dir}")
+                      test_regex: str, parallel: int = 11, model: str | None = None,
+                      verbose: bool = False) -> bool:
+    """Launch the full suite once, wait for it, then run ONE investigate-and-report collect turn.
+
+    Returns True when the report is clean (no NEW failures and no suspected breaking changes /
+    API bugs). The return is ADVISORY — the caller does NOT gate the pipeline exit code on it;
+    the upgrade's green build alone decides success. It is surfaced only for visibility.
+    """
+    launch_result = run_dir / "acctest.launch.result.json"
+    collect_result = run_dir / "acctest.result.json"
+    launch_prompt = _build_prompt(LAUNCH_PROMPT_FILE, rp_name, test_regex=test_regex,
+                                  acctest_dir=acctest_dir, result_path=launch_result,
+                                  parallel=parallel)
+    collect_prompt = _build_prompt(COLLECT_PROMPT_FILE, rp_name, test_regex=test_regex,
+                                   acctest_dir=acctest_dir, result_path=collect_result)
+
+    print("=== acctest: launching the FULL suite (detached) ===")
+    await run_session(client, launch_prompt, run_dir / "acctest.launch.log",
+                      agent_config=LAUNCH_AGENT_CONFIG, agent_name=LAUNCH_AGENT_NAME, model=model,
+                      verbose=verbose)
+
+    # Guard: only wait if the launch actually started a run. A launch that failed (bad env,
+    # tests that don't compile, a shell-quoting error) leaves no live PID; without this check
+    # the watcher would "finish" instantly and collect would just report an empty/failed run.
+    launch = read_result(launch_result)
+    if launch.get("status") != "launched" or _read_pid(acctest_dir / "run.pid") is None:
+        print(f"acctest launch did not start a run (status={launch.get('status', 'unknown')}); "
+              f"see {launch_result} and {acctest_dir}/run.err — skipping collect.")
         return False
 
-    print("=== acctest: smoke green -> FULL suite ===")
-    full = await _run_phase(
-        client, run_dir, acctest_dir, rp_name=rp_name, test_regex=test_regex,
-        phase="full", phase_scope="the entire suite matching test_regex",
-        max_rounds=max_rounds, model=model, verbose=verbose)
-    if full != CONVERGED:
-        print(f"full phase did not converge ({full}); see logs in {run_dir}")
-    return full == CONVERGED
+    print(f"=== acctest: waiting for detached run in {acctest_dir} ===")
+    wait_fh = (run_dir / "acctest.wait.log").open("w", encoding="utf-8") if verbose else None
+    try:
+        def log(msg: str) -> None:
+            line = f"[{time.strftime('%H:%M:%S')}] {msg}"
+            print(line)
+            if wait_fh is not None:
+                wait_fh.write(line + "\n")
+                wait_fh.flush()
+        await _wait(acctest_dir, log)
+    finally:
+        if wait_fh is not None:
+            wait_fh.close()
+
+    print("=== acctest: investigate & report (no code changes) ===")
+    await run_session(client, collect_prompt, run_dir / "acctest.collect.log",
+                      agent_config=COLLECT_AGENT_CONFIG, agent_name=COLLECT_AGENT_NAME, model=model,
+                      verbose=verbose)
+
+    clean = _summarize(read_result(collect_result), collect_result)
+    if not verbose:
+        _cleanup_intermediate(acctest_dir)
+    return clean
+
+
+def _cleanup_intermediate(acctest_dir: Path) -> None:
+    """Drop collect scratch files; keep the report and baseline."""
+    for name in ("new_failures.txt", "triage.json", "meta.json", "run.pid", "run.err", "logs"):
+        path = acctest_dir / name
+        try:
+            shutil.rmtree(path) if path.is_dir() else path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _summarize(result: dict[str, Any], collect_result: Path) -> bool:
+    """Print a human-facing summary of the collect report; return True if it found nothing to act
+    on. Purely advisory — this stage changes no code, so any finding is a hand-off to a human."""
+    counts = result.get("counts", {})
+    new_failed = counts.get("new_failed")
+    if new_failed is None:
+        new_failed = len(result.get("new_failures", []))
+    breaking = result.get("breaking_changes", [])
+    api_bugs = result.get("api_bugs", [])
+    status = result.get("status", "unknown")
+
+    print(f"acctest report ({status}): {new_failed} new failure(s), "
+          f"{len(breaking)} suspected breaking change(s), {len(api_bugs)} API bug(s). "
+          f"full report: {collect_result}")
+    if status == "failed":
+        print("  note: the run or the collect agent itself failed; the report may be incomplete.")
+
+    clean = status != "failed" and new_failed == 0 and not breaking and not api_bugs
+    if clean:
+        print("  no NEW failures or breaking changes detected.")
+    else:
+        print("  review the report; this stage does NOT change code — a human must act on it.")
+    return clean
