@@ -3,7 +3,7 @@
     "TSADocumentation": "https://aka.ms/OBTSA",
     "projectName":  "internal",
     "areaPath":  "internal\\<Example>\\<Team>\\<AreaPath>",
-    "notificationAliases": ["yonzhan,zhwen,tritorto,nanxu,beya,yeliu"],
+    "notificationAliases": ["qixialu"],
     "ppe":  "false",
     "template":  "TFSMSAzure",
     "codebaseName":  "TFSMSAzure_tf-api-upgrade"
