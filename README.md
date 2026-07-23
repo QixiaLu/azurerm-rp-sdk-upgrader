@@ -34,7 +34,7 @@ or flaky acceptance run never fails a run whose upgrade converged.
   so all work stays unstaged.
 - Every turn streams its events to a per-turn log under the checkout's
   `.upgrader/<rp>/<version>/`, and each agent writes a small **`result.json`** sidecar so the
-  loops advance on a deterministic pass/fail signal rather than by parsing prose.
+  stages advance on a deterministic pass/fail signal rather than by parsing prose.
 
 ### The two stages
 

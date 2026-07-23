@@ -109,7 +109,7 @@ async def run_session(client: Any, prompt: str, log_path: Path, *,
     except Exception as exc:  # noqa: BLE001 — record and move on
         write(f"[exception] {exc!r}")
         # Also surface it on the console; otherwise a turn that fails immediately (auth, model
-        # id, empty/unmounted repo) is invisible and the loop silently burns iterations.
+        # id, empty/unmounted repo) is invisible and the session silently produces no result.
         hint = f" (see {log_path})" if verbose else ""
         print(f"  session error: {exc!r}{hint}")
     finally:

@@ -1,7 +1,8 @@
-"""Upgrade stage: the Ralph loop that bumps one RP's SDK API version until the build is green.
+"""Upgrade stage: one Copilot session that bumps one RP's SDK API version toward a green build.
 
-Fresh Copilot session per iteration; disk is the shared state (IMPLEMENTATION_PLAN.md +
-result.json). The loop stops as soon as result.json reports a green `go build ./...`.
+A single fresh session does one bounded chunk of the upgrade; disk is the shared state
+(IMPLEMENTATION_PLAN.md + result.json). Success is reported only when result.json records a
+green `go build ./...`.
 """
 
 from __future__ import annotations
@@ -53,7 +54,7 @@ def plan_seed(rp_name: str, target: str, old: str | None) -> str:
     return "\n".join([
         f"# Upgrade plan: {rp_name} {old or '(current)'} -> {target}",
         "",
-        "Shared task list across iterations. Keep current; future iterations start fresh.",
+        "Task list for this upgrade session; tick items as you complete them.",
         "",
         "- [ ] Confirm target API version is published; bump go-azure-sdk if needed.",
         "- [ ] Update imports/clients/models/enums to target version.",
@@ -63,7 +64,7 @@ def plan_seed(rp_name: str, target: str, old: str | None) -> str:
         "- [ ] make fmt, then ALWAYS make document-fix (refreshes docs incl. API version; never skip as N/A)."
         "",
         "## Notes",
-        "- (iterations append findings here)",
+        "- (append findings here)",
     ])
 
 
@@ -89,7 +90,7 @@ def _print_api_changes(result_path: Path) -> None:
 async def run_upgrade(client, run_dir: Path, *, rp_name: str, target: str, old: str | None,
                       model: str | None, verbose: bool = False,
                       with_toolkit: bool = False) -> bool:
-    """Ralph loop on an already-started client: iterate until the build is green.
+    """Run one upgrade session on an already-started client; return True iff the build is green.
 
     ``with_toolkit`` opts into injecting the allow-listed ai-assisted-development toolkit content
     (instructions embedded in the prompt, skills via ``skill_directories``). Off by default.

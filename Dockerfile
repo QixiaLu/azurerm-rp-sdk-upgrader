@@ -1,4 +1,4 @@
-# upgrader sandbox: runs the RP API-version upgrade loop against a mounted azurerm fork.
+# upgrader sandbox: runs the RP API-version upgrade against a mounted azurerm fork.
 FROM golang:1.26-bookworm
 
 # Let Go auto-fetch the exact toolchain pinned in the repo's go.mod (e.g. >= 1.26.4),
@@ -39,6 +39,6 @@ COPY .github ./.github
 COPY third_party ./third_party
 RUN python3 -m pip install --break-system-packages -e .
 
-# The azurerm fork is mounted here at runtime; loop writes .upgrader/ under it.
+# The azurerm fork is mounted here at runtime; the upgrade writes .upgrader/ under it.
 WORKDIR /workspace/azurerm
 ENTRYPOINT ["python3", "-m", "upgrader"]
