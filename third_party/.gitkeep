@@ -1,3 +1,0 @@
-# Keeps third_party/ present even when the aii submodule isn't initialised, so the Docker
-# build's `COPY third_party` never hard-fails. The ai-assisted-development toolkit is optional
-# and opt-in (--with-toolkit); toolkit.py degrades gracefully when the submodule is absent.
