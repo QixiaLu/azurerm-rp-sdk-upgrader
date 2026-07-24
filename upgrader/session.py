@@ -79,12 +79,14 @@ def _event_logger(log_path: Path | None):
 async def run_session(client: Any, prompt: str, log_path: Path, *,
                       agent_config: dict[str, Any], agent_name: str,
                       model: str | None, verbose: bool = False,
-                      extra_skill_dirs: list[str] | None = None) -> None:
+                      extra_skill_dirs: list[str] | None = None,
+                      mcp_servers: dict[str, Any] | None = None) -> None:
     """Run one fresh Copilot session for the given agent.
 
     When ``verbose`` is True, every event is streamed to ``log_path``; otherwise no log file
     is written and only the agent's ``result.json`` sidecar is kept. ``extra_skill_dirs`` adds
-    skill directories beyond the bundled ones (e.g. curated toolkit skills).
+    skill directories beyond the bundled ones (e.g. curated toolkit skills). ``mcp_servers``
+    registers MCP servers (name -> config) whose tools the agent may call this session.
     """
     from copilot import PermissionHandler  # type: ignore[import-not-found]
 
@@ -103,6 +105,8 @@ async def run_session(client: Any, prompt: str, log_path: Path, *,
         kwargs["skill_directories"] = skill_dirs
     if model:
         kwargs["model"] = model
+    if mcp_servers:
+        kwargs["mcp_servers"] = mcp_servers
     session = await client.create_session(**kwargs)
     try:
         await session.send_and_wait(prompt, timeout=TURN_TIMEOUT_SECONDS)

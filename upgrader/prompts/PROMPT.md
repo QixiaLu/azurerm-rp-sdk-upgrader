@@ -1,7 +1,3 @@
-You are a senior software engineer on the terraform-provider-azurerm repository, running as a
-SINGLE autonomous upgrade session with a FRESH context. State lives on disk, not in memory. Carry the upgrade as far
-as you can this run — validate, record, exit.
-
 Inputs:
   rp_name: <rp_name>
   target_api_version: <target_api_version>
@@ -22,12 +18,7 @@ Inputs:
 3. Validate: focused `go build ./internal/services/<rp_name>/...` while iterating, then full
    `go build ./...` to confirm.
 4. Update IMPLEMENTATION_PLAN.md NOW: tick finished tasks, append findings/blockers.
-5. Once the upgrade is otherwise complete (build green, no tasks left), format the code from
-   the repo root: `make fmt`, then ALWAYS run `make document-fix` — it refreshes the generated
-   docs (including the API version referenced there), so run it even when you touched no docs
-   by hand; never mark it "N/A". Skip formatting only while still mid-task. Never hand-format
-   vendor/.
-6. Never read/diff vendor/ or go.sum. Leave all edits unstaged; do not git commit/push/
+5. Never read/diff vendor/ or go.sum. Leave all edits unstaged; do not git commit/push/
    checkout. Write result.json and EXIT.
 
 When finished, write a single JSON object to <result_path> with: "status"
@@ -36,9 +27,9 @@ When finished, write a single JSON object to <result_path> with: "status"
 — e.g. newly added fields, removed/renamed properties, changed defaults or enums — each as
 {"kind": "added"/"removed"/"renamed"/"default-changed"/"enum-changed"/"behavior", "symbol",
 "detail"}; empty list if none). Base it on the old vs target SDK model diff plus the
-Microsoft Learn / azure-rest-api-specs evidence you already gathered — do not re-investigate.
+azure-rest-api-specs evidence you already gathered — do not re-investigate.
 Set status="done" + build_passed=true only when full `go build ./...` is green.
 
 ---
-# ai-assisted-development toolkit guidance (allow-listed instructions)
+# ai-assisted-development toolkit guidance
 <toolkit_guidance>

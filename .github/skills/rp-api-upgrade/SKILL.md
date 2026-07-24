@@ -14,6 +14,16 @@ Use this skill when you need to:
 - identify and mitigate user-facing breaking changes caused by API upgrades,
 - validate the upgrade via `go build ./...`.
 
+## Provider standards — defer to the toolkit
+
+This skill owns the *upgrade workflow*, not the provider's coding standards. The
+ai-assisted-development toolkit is the authoritative owner of provider-development standards — Go/Azure
+implementation patterns, error-message formatting, schema/validation placement, PATCH/residual-state
+handling, transitional deprecation and `features`-flag gating, and acceptance-test shape. When its
+guidance is available to this session (allow-listed `*.instructions.md` embedded in the run, and/or
+toolkit skills such as `acceptance-testing` offered alongside this one), treat that guidance as
+authoritative and defer to it for *how* edits are written.
+
 ## Required Inputs
 
 - `rp_name`
@@ -36,12 +46,24 @@ Use this skill when you need to:
 3. Update imports to the target API version, per sub-package — the client (`client/client.go`) and resource/data-source files. Preserve intentional overrides under `azuresdkhacks/`.
 4. Sync the vendor directory: `go mod tidy` then `go mod vendor` so the now-imported target sub-package is pulled into `vendor/` (and any step-2 bump is applied). Long-running; see command hygiene. Confirm with a single path check.
 5. Update impacted symbols.
-6. Run a breaking-change assessment:
-   - confirm suspected changes against the **target API version** — cross-check the REST
-     reference/changelog (e.g. Microsoft Learn MCP) and diff the **swagger** in
+6. Run a breaking-change assessment. **When the toolkit's breaking-change guidance is available to
+   this session, follow it as authoritative for classifying and mitigating changes** — the
+   `migration-guide` instructions ("Breaking Change Patterns" / "Breaking Change Guardrails") and the
+   `api-evolution-patterns` instructions own that policy (what counts as breaking, major-release
+   `features` gating to avoid silent minor-release breakage, upgrade-guide/doc requirements). The
+   bullets below are the swagger-evidence step this skill owns plus a self-sufficient fallback for
+   when the toolkit is not loaded; where they overlap the toolkit's guidance, the toolkit wins.
+   - confirm suspected changes against the **target API version** — diff the **swagger** in
      `Azure/azure-rest-api-specs` for the affected property (`type`/`required`/`default`/`enum`/
      `x-ms-*`/response shape) so changed defaults/enums/required-fields are caught even when they
      compile cleanly,
+   - as a complementary semantics check, when the Microsoft Learn MCP tools
+     (`microsoft_docs_search` / `microsoft_docs_fetch`) are available to the session, search the
+     target RP and `target_api_version` for documented breaking changes the code diff alone will not
+     reveal — changed or newly added default values, deprecations/soft-removals, removed or renamed
+     properties, and behavior notes. Use this to *surface intent* (e.g. "is this new default
+     intentional?"), then confirm every lead against the swagger before classifying — MS Learn is a
+     prose/reference aid, so the `azure-rest-api-specs` swagger remains the authoritative evidence,
    - classify changes: resource/data source removal, schema rename/type/default/validation
      changes, behavior/default-value changes,
    - mitigate as instructed in the repo's `contributing/topics/guide-breaking-changes.md`; for
@@ -54,15 +76,12 @@ Use this skill when you need to:
    - fix errors until the RP package compiles.
 8. Validate full provider build:
    - `go build ./...`
-9. Format everything AFTER all edits are done — run the repo's make targets from the repo root, not per-file tools:
-    - `make fmt` (gofmt/gofumpt + goimports over the Go code),
-    - `make document-fix` — ALWAYS run this; it regenerates the docs (including the API version they reference), so run it even when you edited no docs by hand. Never skip it or mark it "N/A".
 
 ## Heuristics
 
 - Act as a senior provider engineer: aim for **zero behavioral regressions**, not just a green build. Azure APIs often ship **undocumented breaking changes** (changed defaults, nil/pointer semantics, renamed/repurposed enums, altered response shapes) that compile but silently change behavior.
 - Diff old vs new SDK models/enums/constants; treat any change to defaults, required/optional, `Computed`, nil-handling, or enum values as a suspected breaking change until proven safe.
-- Confirm whether a model/enum/default change is intended (not just an SDK-generation artifact) by checking the target API version directly: Microsoft Learn MCP for the REST docs/changelog, and the `azure-rest-api-specs` swagger for the property's `type`/`required`/`default`/`enum`/`x-ms-*`/response shape.
+- Confirm whether a model/enum/default change is intended (not just an SDK-generation artifact) by checking the target API version directly: the `azure-rest-api-specs` swagger for the property's `type`/`required`/`default`/`enum`/`x-ms-*`/response shape.
 - Trace data flow (expand/flatten + schema), not just the compile error, when a field changes.
 - Prefer adapting local mapping/expand/flatten helpers over broad refactors.
 - Keep edits minimal and localized to target RP unless transitive compile errors require wider changes.
@@ -82,7 +101,6 @@ Use this skill when you need to:
 - No unresolved compile errors from the upgrade.
 - Breaking changes are either mitigated according to `contributing/topics/guide-breaking-changes.md` or captured as explicit follow-up actions.
 - `go build ./...` return exit code `0`.
-- Code is formatted with `make fmt` after all edits, and `make document-fix` is ALWAYS run (regenerates docs incl. the API version) — both from the repo root.
 - If `go-azure-sdk` was bumped, the new version is the minimum that ships the target API (noted in deliverables); any `vendor/` changes are from that bump only.
 
 ## Deliverables

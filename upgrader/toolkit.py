@@ -24,12 +24,14 @@ from pathlib import Path
 _PAYLOAD = Path(__file__).resolve().parent.parent / "submodule" / "aii" / ".github"
 
 # Explicit allow-lists — only these are loaded into the upgrade session.
+#
+# Scoped to what an API *version bump* actually needs: breaking-change classification/mitigation
+# and API-evolution/versioning. The new-resource-implementation instructions (implementation-guide,
+# implementation-compliance-contract, azure-patterns, error-patterns) are intentionally excluded —
+# a bump adapts existing expand/flatten/schema rather than authoring resources, and the target
+# repo's own contributing/topics guides remain the on-demand source for those conventions.
 _INSTRUCTIONS = (
     "api-evolution-patterns.instructions.md",
-    "azure-patterns.instructions.md",
-    "error-patterns.instructions.md",
-    "implementation-compliance-contract.instructions.md",
-    "implementation-guide.instructions.md",
     "migration-guide.instructions.md",
 )
 _SKILLS = ("acceptance-testing",)

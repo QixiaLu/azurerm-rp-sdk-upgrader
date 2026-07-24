@@ -71,7 +71,7 @@ provider's OWN schema (`Default`, `Computed`, `Required`, validation, type, or a
 rename). You REPORT it; a human decides and implements the mitigation. For each, capture:
 
 1. **What changed** — the property/enum/field and its old → new behavior in `<target_api_version>`.
-2. **Evidence** — the Microsoft Learn doc and/or the `azure-rest-api-specs` swagger path proving
+2. **Evidence** — the `azure-rest-api-specs` swagger path proving
    the change (see *Researching an API change*).
 3. **User-facing?** — set `schema_surface_changed=true` if it changes a user-facing schema
    attribute; `false` if it is pure API-default absorption (sending the provider's existing
@@ -81,15 +81,11 @@ rename). You REPORT it; a human decides and implements the mitigation. For each,
    `contributing/topics/guide-breaking-changes.md`", or "absorb the API default (no flag needed)".
    This is a recommendation for the human — do not implement it here.
 
-## Researching an API change (Microsoft Learn MCP + swagger)
+## Researching an API change (swagger)
 
 Before classifying a failure as a genuine breaking change (vs. stale test data), confirm what
 actually changed between the old and target API versions:
 
-- **Microsoft Learn MCP** — run `microsoft_docs_search`, then `microsoft_docs_fetch` on the best
-  result, for the RP's REST API reference and any "what's new" / changelog covering
-  `<target_api_version>`. Look for changed defaults, renamed or repurposed enum values, newly
-  required fields, or altered response shapes for the failing attribute.
 - **Swagger (`Azure/azure-rest-api-specs`)** — inspect the OpenAPI spec for the RP at the target
   version under `specification/<rp>/resource-manager/**/<target_api_version>/` and diff it against
   the old version for the affected property: `type`, `required`, `default`, `enum` values,
@@ -110,7 +106,7 @@ Decision:
 ## Heuristics
 
 - Common test-side signatures after an API upgrade: attribute renamed in HCL, a `Computed` value changed so an assertion's expected value drifts, an enum/string value changed, or `ImportStep()` needs an `ignore` for a now-Computed field.
-- When a post-upgrade diff might be intended, confirm it against the target API version via Microsoft Learn MCP and the `azure-rest-api-specs` swagger (see *Researching an API change*) before classifying test-side vs breaking change — never infer intent from the log alone.
+- When a post-upgrade diff might be intended, confirm it against the target API version via the `azure-rest-api-specs` swagger (see *Researching an API change*) before classifying test-side vs breaking change — never infer intent from the log alone.
 - If the only plausible fix would require touching resource/schema code, classify it as a breaking change (report it), NOT as test-side.
 - The instant a breaking change is confirmed, REPORT it and STOP — do not triage the remaining NEW failures; a human must resolve the breaking change before the upgrade can continue.
 - Never weaken a test: do not skip it, loosen or delete an assertion, or add an `ignore`/`ExpectNonEmptyPlan`, and never recommend doing so. A failing assertion is signal, not noise — report the real cause instead of masking it.

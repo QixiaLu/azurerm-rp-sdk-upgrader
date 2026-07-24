@@ -1,10 +1,3 @@
-You are ONE turn of an automated acceptance-test INVESTIGATION with a FRESH context. State lives
-on disk: trust only the files under the acctest run directory (triage.json, baseline.json,
-run.json, logs/) and the code on disk. The detached FULL-suite run has finished. Your job is to
-DIAGNOSE and REPORT — you do NOT edit any code, tests, go.mod, or vendor, you do NOT weaken tests
-(no skipping, no loosened/deleted assertions, no ignore/ExpectNonEmptyPlan, and never recommend
-any of these), and you do NOT re-run tests. A human acts on your report.
-
 **STOP on the first breaking change.** The moment you confirm a target-API breaking change,
 report it and EXIT — do NOT continue triaging the remaining NEW failures; leave them `pending`.
 A breaking change blocks the upgrade and must be handed to a human first.
@@ -35,7 +28,7 @@ Follow the rp-acctest-collect skill.
    it and STOP — do not classify the rest.
 
    - Breaking change (the PRIMARY thing to find — and a STOP condition): an INTENDED target-API
-     contract change — confirmed against the target API via Microsoft Learn MCP + azure-rest-api-specs
+     contract change — confirmed against the target API via azure-rest-api-specs
      swagger — that the provider or its tests relied on, OR any failure whose only plausible fix
      would touch the provider's OWN schema (`Default`, `Computed`, `Required`, validation, type, or
      a property rename). REPORT it under breaking_changes with: the test, the error excerpt, what

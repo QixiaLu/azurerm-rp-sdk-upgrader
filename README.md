@@ -52,7 +52,8 @@ code.
 
 ## Local Usage
 
-End-to-end: clone with submodules, build the sandbox image, then run it against your checkout.
+End-to-end: clone with submodules, then run it against your checkout with Docker Compose (which
+builds the image, mounts your checkout, loads `.env`, and caches Go modules for you).
 
 **1. Clone (with submodules)** — the toolkit rides along as a submodule at `submodule/aii`:
 
@@ -61,27 +62,23 @@ git clone --recurse-submodules <this-repo>
 cd ai-api-upgrade
 ```
 
-**2. Build the sandbox image** — ships Python, Go, `make`, `git`, the `gh` CLI, and Terraform:
+**2. Configure** — put `GH_TOKEN` (and, for acctest runs, the Azure/TeamCity vars) in a `.env`
+file, and point `AZURERM_REPO` at your provider checkout:
 
 ```pwsh
-docker build -t upgrader-sandbox .
+$env:AZURERM_REPO = "C:\Repos\terraform-provider-azurerm"
 ```
 
-**3. Run it** — mount your `terraform-provider-azurerm` checkout at `/workspace/azurerm` and
-pass it as `--repo`. Put `GH_TOKEN` (and the acctest vars) in a `.env` file consumed by
-`--env-file`.
+**3. Run it** — everything after `upgrader` is passed straight to the CLI. Compose builds the
+image on first use (`--build` forces a rebuild):
 
 ```pwsh
 # Upgrade only (stop once the build is green):
-docker run --rm --env-file .env `
-  -v "C:\Repos\terraform-provider-azurerm:/workspace/azurerm" `
-  upgrader-sandbox `
+docker compose run --rm upgrader `
   keyvault 2023-07-01 --repo /workspace/azurerm --skip-acctest
 
 # Full run: upgrade, then run the acctest suite once and report:
-docker run --rm --env-file .env `
-  -v "C:\Repos\terraform-provider-azurerm:/workspace/azurerm" `
-  upgrader-sandbox `
+docker compose run --rm upgrader `
   keyvault 2023-07-01 --repo /workspace/azurerm `
   --old-api-version 2023-02-01 --test-regex 'TestAccKeyVault_'
 ```
@@ -95,7 +92,7 @@ docker run --rm --env-file .env `
 | `--skip-acctest` | Stop after the build is green; skip acceptance-test investigation. |
 | `--test-regex` | Acctest `-run` filter for the full suite (default: `TestAcc`). |
 | `--model` | Copilot model (e.g. `claude-sonnet-4.5`). |
-| `--with-toolkit` | Inject the allow-listed ai-assisted-development toolkit content (migration instructions + `acceptance-testing` skill). Off by default. |
+| `--with-toolkit` | Inject the allow-listed ai-assisted-development toolkit content (migration instructions + `acceptance-testing` skill). Suggested if you don't have `terraform-azurerm-ai-assisted-development` installed in the local AzureRM repo. Off by default. |
 | `-v`, `--verbose` | Write per-turn event logs to disk (otherwise only `result.json` is kept). |
 
 ## Required environment
@@ -120,7 +117,7 @@ docker run --rm --env-file .env `
 Prompt bodies live under [upgrader/prompts/](upgrader/prompts) as `PROMPT.md`,
 `PROMPT_ACCTEST_LAUNCH.md`, and `PROMPT_ACCTEST_COLLECT.md`. See
 [OVERVIEW.md](upgrader/OVERVIEW.md) for the high-level
-picture and roadmap (breaking-change detection, Pandora PR awareness).
+picture and roadmap (breaking-change detection).
 
 ## Constraints (by design)
 

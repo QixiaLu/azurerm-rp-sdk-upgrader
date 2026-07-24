@@ -18,6 +18,18 @@ RESULT_FILE = "result.json"
 
 AGENT_NAME = "rp-api-upgrade"
 
+# Microsoft Learn MCP: read-only, public, no auth. Gives the breaking-change assessment
+# (SKILL.md step 6) a semantics search over published Learn docs to surface candidate changes
+# (default-value/enum/deprecation shifts). Subordinate to swagger — leads must still be
+# confirmed against Azure/azure-rest-api-specs before being classified as breaking.
+MCPS = {
+    "microsoft-learn": {
+        "type": "http",
+        "url": "https://learn.microsoft.com/api/mcp",
+        "tools": ["*"],
+    },
+}
+
 # The upgrade agent: bump one RP's SDK API version until `go build ./...` is green.
 AGENT_CONFIG = {
     "name": AGENT_NAME,
@@ -59,9 +71,8 @@ def plan_seed(rp_name: str, target: str, old: str | None) -> str:
         "- [ ] Confirm target API version is published; bump go-azure-sdk if needed.",
         "- [ ] Update imports/clients/models/enums to target version.",
         "- [ ] go mod tidy && go mod vendor.",
-        "- [ ] Assess and Address breaking change as instructed in `contributing/topics/guide_breaking_change.md`",
+        "- [ ] Assess and address breaking changes per `contributing/topics/guide-breaking-changes.md`.",
         "- [ ] Fix compile errors until `go build ./...` is green.",
-        "- [ ] make fmt, then ALWAYS make document-fix (refreshes docs incl. API version; never skip as N/A)."
         "",
         "## Notes",
         "- (append findings here)",
@@ -107,7 +118,8 @@ async def run_upgrade(client, run_dir: Path, *, rp_name: str, target: str, old: 
         extra_skill_dirs = [str(skills)] if skills else None
     await run_session(client, prompt, run_dir / "upgrade.log",
                         agent_config=AGENT_CONFIG, agent_name=AGENT_NAME, model=model,
-                        verbose=verbose, extra_skill_dirs=extra_skill_dirs)
+                        verbose=verbose, extra_skill_dirs=extra_skill_dirs,
+                        mcp_servers=MCPS)
     if build_passed(result_path):
         print(f"build green; logs in {run_dir}")
         _print_api_changes(result_path)
