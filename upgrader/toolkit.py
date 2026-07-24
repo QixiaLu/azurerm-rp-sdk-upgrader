@@ -2,7 +2,7 @@
 
 Instead of installing the toolkit into the user's checkout (which pollutes their ``.github/`` and
 makes the runtime auto-inject *everything*, including the review fleet), we read the toolkit's
-content straight from the pinned ``third_party/aii`` **git submodule** and hand only an explicit
+content straight from the pinned ``submodule/aii`` **git submodule** and hand only an explicit
 allow-list of files to the session:
 
 - **instructions** -> concatenated into text that the upgrade prompt embeds (they are not skills,
@@ -21,15 +21,17 @@ import tempfile
 from pathlib import Path
 
 # The pinned toolkit git submodule (see .gitmodules; pinned to a release tag).
-_PAYLOAD = Path(__file__).resolve().parent.parent / "third_party" / "aii" / ".github"
+_PAYLOAD = Path(__file__).resolve().parent.parent / "submodule" / "aii" / ".github"
 
 # Explicit allow-lists — only these are loaded into the upgrade session.
+#
+# Scoped to what an API *version bump* actually needs: breaking-change classification/mitigation
+# and API-evolution/versioning. The new-resource-implementation instructions (implementation-guide,
+# implementation-compliance-contract, azure-patterns, error-patterns) are intentionally excluded —
+# a bump adapts existing expand/flatten/schema rather than authoring resources, and the target
+# repo's own contributing/topics guides remain the on-demand source for those conventions.
 _INSTRUCTIONS = (
     "api-evolution-patterns.instructions.md",
-    "azure-patterns.instructions.md",
-    "error-patterns.instructions.md",
-    "implementation-compliance-contract.instructions.md",
-    "implementation-guide.instructions.md",
     "migration-guide.instructions.md",
 )
 _SKILLS = ("acceptance-testing",)

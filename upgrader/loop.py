@@ -1,7 +1,7 @@
 """Top-level orchestration: run the upgrade stage, then (optionally) acctest triage.
 
 Each stage owns a fresh Copilot client for its run; disk is the shared state between
-iterations and between stages.
+turns and between stages.
 """
 
 from __future__ import annotations

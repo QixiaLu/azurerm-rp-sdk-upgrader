@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "upgrader"
 version = "0.1.0"
-description = "Ralph-loop CLI that upgrades one Azure RP API version in terraform-provider-azurerm (upgrade -> acctest triage) via GitHub Copilot agents."
+description = "CLI that upgrades one Azure RP API version in terraform-provider-azurerm (upgrade -> acctest triage) via GitHub Copilot agents."
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MPL-2.0" }

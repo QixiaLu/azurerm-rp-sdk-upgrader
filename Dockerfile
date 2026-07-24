@@ -1,4 +1,4 @@
-# upgrader sandbox: runs the RP API-version upgrade loop against a mounted azurerm fork.
+# upgrader sandbox: runs the RP API-version upgrade against a mounted azurerm fork.
 FROM golang:1.26-bookworm
 
 # Let Go auto-fetch the exact toolchain pinned in the repo's go.mod (e.g. >= 1.26.4),
@@ -30,15 +30,15 @@ RUN curl -fsSL "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/te
 ENV TF_ACC_TERRAFORM_PATH=/usr/local/bin/terraform
 
 # --- install upgrader (and the Copilot SDK) -----------------------------------------
-# The ai-assisted-development toolkit rides along as the pinned third_party/aii submodule;
+# The ai-assisted-development toolkit rides along as the pinned submodule/aii submodule;
 # upgrader/toolkit.py selectively loads its instructions/skills at run time.
 WORKDIR /opt/ai-api-upgrade
 COPY pyproject.toml README.md ./
 COPY upgrader ./upgrader
 COPY .github ./.github
-COPY third_party ./third_party
+COPY submodule ./submodule
 RUN python3 -m pip install --break-system-packages -e .
 
-# The azurerm fork is mounted here at runtime; loop writes .upgrader/ under it.
+# The azurerm fork is mounted here at runtime; the upgrade writes .upgrader/ under it.
 WORKDIR /workspace/azurerm
 ENTRYPOINT ["python3", "-m", "upgrader"]

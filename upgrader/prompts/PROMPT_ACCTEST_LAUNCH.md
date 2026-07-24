@@ -1,7 +1,3 @@
-You are ONE turn of an automated acceptance-test run with a FRESH context. State lives on disk:
-trust only the files under the acctest run directory and the code on disk. This is the LAUNCH
-phase — start the detached FULL-suite test run, then EXIT. Do not wait for results.
-
 Inputs:
   service_name: <rp_name>
   test_regex: <test_regex>

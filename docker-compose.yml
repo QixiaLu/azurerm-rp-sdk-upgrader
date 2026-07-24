@@ -2,7 +2,7 @@ services:
   upgrader:
     build: .
     image: upgrader-sandbox
-    # Mount your azurerm fork; the loop edits it in place and writes .upgrader/ inside it.
+    # Mount your azurerm fork; the upgrade edits it in place and writes .upgrader/ inside it.
     volumes:
       - ${AZURERM_REPO:-./terraform-provider-azurerm}:/workspace/azurerm
       # Cache Go modules between runs so vendor/tidy isn't redownloaded each time.
