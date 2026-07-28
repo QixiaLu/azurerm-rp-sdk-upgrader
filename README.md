@@ -5,60 +5,54 @@ A minimal CLI that upgrades one Azure Resource Provider's **SDK API version** in
 
 ```
 upgrade  →  acctest investigation (advisory)
-(rp-api-upgrade)  (rp-acctest-launch + rp-acctest-collect)
+(Upgrade agent)   (orchestrator launches; Test agent investigates)
 ```
 
 All work happens **directly in the provided checkout**; nothing is committed, pushed, or
-branched — every change is left unstaged for human review.
-
-The **upgrade** stage does the fix work end to end against fast, objective feedback
-(`go build`). The **acctest** stage is diagnose-only: it runs the full suite once, diffs NEW
-failures against the TeamCity `main` baseline, and writes a categorized report (notably suspected
-**API breaking changes**). It never edits code or re-runs tests, and is advisory — a slow or
-flaky acceptance run never fails a run whose upgrade converged.
+branched — every change is left unstaged for human review. Only the **upgrade** decides success;
+the acctest stage is advisory and never changes the exit code.
 
 ## How it works
 
 - Each stage runs as fresh **GitHub Copilot SDK sessions** (one per turn) via the
   [Copilot SDK for Python](https://github.com/github/copilot-sdk); disk is the only shared
   state between turns and stages.
-- Every session's working directory is the `--repo` checkout, and the bundled agents read
-  skills from `.github/skills/<name>`.
-- A **no-VCS guard** (`_no_vcs_hooks` in [session.py](upgrader/session.py)) denies forbidden
-  `git` subcommands (`git commit`, `git push`, `git checkout`, …) so all work stays unstaged.
+- Each role is a single **agent** under [upgrader/agents/](upgrader/agents) —
+  `upgrade.md`, `test-launch.md`, and `test.md` — loaded verbatim as the agent's system prompt;
+  per-turn task prompts under `prompts/` carry only the dynamic inputs. All mechanical work
+  (version detection, the TeamCity baseline, the `make acctests` quoting/spawn, the finished-run
+  reduction, `go build`) is deterministic Python in [helpers.py](upgrader/helpers.py); the launch
+  agent shells out to it via `python -m upgrader.helpers`.
 - Each agent writes a small **`result.json`** sidecar so stages advance on a deterministic
-  pass/fail signal rather than by parsing prose; per-turn event logs land under
-  `.upgrader/<rp>/<version>/`.
+  pass/fail signal rather than by parsing prose; the agent's transcript streams to stdout
+  (no per-agent log files — redirect stdout if you want to keep it).
 
 ### The two stages
 
 | Stage | Flow | "Done" means |
 | ----- | ---- | ------------ |
-| **upgrade** ([upgrade.py](upgrader/upgrade.py)) | single session that edits the RP until `result.json` reports a green `go build ./...` | build is green |
-| **acctest** ([acctest.py](upgrader/acctest.py)) | single pass: *launch full suite → watch detached PID → investigate & report* (no code edits) | the run finished and every NEW-vs-baseline failure is classified in a report |
-
-Only the **upgrade** decides success; the acctest stage is advisory and never changes the exit
-code.
+| **upgrade** ([upgrade.py](upgrader/upgrade.py)) | bounded round loop: each round is a fresh session that fixes a chunk, then the **orchestrator** runs `go build ./...` as the authoritative convergence gate and feeds the remaining compile errors into the next round (up to `--max-rounds`) | the orchestrator's `go build ./...` is green |
+| **acctest** ([acctest.py](upgrader/acctest.py)) | a **launch agent** resolves the RP's provider service dir + regex and starts the suite (via the helpers CLI); the orchestrator waits out the detached run and reduces it; then a **Test agent** investigates & reports the NEW-vs-baseline failures (no code edits) | the run finished and every NEW-vs-baseline failure is classified in a report |
 
 ## Prerequisites
 
 - **Docker** — the only hard requirement for the supported (sandboxed) path; the image bundles
   Python, Go, `make`, `git`, the `gh` CLI, and Terraform.
-- **Git** — to clone this repo (with `--recurse-submodules`) and to mount/review your
+- **Git** — to clone this repo and to mount/review your
   `terraform-provider-azurerm` checkout.
-- **A GitHub token** (`GH_TOKEN` / `GITHUB_TOKEN`) with Copilot access, passed via `--env-file`.
+- **A GitHub token** (`GH_TOKEN`) with Copilot access, passed via `--env-file`.
 - **Azure + TeamCity credentials** — only for acctest runs (skip with `--skip-acctest`); see
   [Required environment](#required-environment).
 
 ## Local Usage
 
-End-to-end: clone with submodules, then run it against your checkout with Docker Compose (which
+End-to-end: clone this repo, then run it against your checkout with Docker Compose (which
 builds the image, mounts your checkout, loads `.env`, and caches Go modules for you).
 
-**1. Clone (with submodules)** — the toolkit rides along as a submodule at `submodule/aii`:
+**1. Clone**:
 
 ```pwsh
-git clone --recurse-submodules <this-repo>
+git clone <this-repo>
 cd ai-api-upgrade
 ```
 
@@ -91,13 +85,12 @@ docker compose run --rm upgrader `
 | `--old-api-version` | Current version to upgrade from (default: detect). |
 | `--skip-acctest` | Stop after the build is green; skip acceptance-test investigation. |
 | `--test-regex` | Acctest `-run` filter for the full suite (default: `TestAcc`). |
+| `--max-rounds` | Max upgrade rounds; each is a fresh session gated by a real `go build ./...` (default: 8). |
 | `--model` | Copilot model (e.g. `claude-sonnet-4.5`). |
-| `--with-toolkit` | Inject the allow-listed ai-assisted-development toolkit content (migration instructions + `acceptance-testing` skill). Suggested if you don't have `terraform-azurerm-ai-assisted-development` installed in the local AzureRM repo. Off by default. |
-| `-v`, `--verbose` | Write per-turn event logs to disk (otherwise only `result.json` is kept). |
 
 ## Required environment
 
-- **Copilot auth:** `GH_TOKEN` or `GITHUB_TOKEN`
+- **Copilot auth:** `GH_TOKEN`
 - **Azure (acctest):** `ARM_CLIENT_ID`, `ARM_CLIENT_SECRET`, `ARM_SUBSCRIPTION_ID`,
   `ARM_TENANT_ID`, `ARM_TEST_LOCATION`, `ARM_TEST_LOCATION_ALT`, `ARM_TEST_LOCATION_ALT2`
 - **TeamCity baseline (acctest):** `TEAMCITY_TOKEN` (or `TEAMCITY_ACCESSTOKEN`),
@@ -109,15 +102,11 @@ docker compose run --rm upgrader `
 | ------ | -------------- |
 | [cli.py](upgrader/cli.py) | argparse surface; single `run` entry. |
 | [loop.py](upgrader/loop.py) | Chains the upgrade and acctest stages; owns a Copilot client per stage. |
-| [session.py](upgrader/session.py) | Fresh Copilot session per turn, no-VCS guard, per-turn event log. |
-| [toolkit.py](upgrader/toolkit.py) | Loads an explicit allow-list from the `submodule/aii` toolkit submodule (6 instruction files embedded in the prompt + the `acceptance-testing` skill via `skill_directories`); never writes to the checkout. |
+| [session.py](upgrader/session.py) | Fresh Copilot session per turn, no-VCS guard, transcript streamed to stdout. |
+| [helpers.py](upgrader/helpers.py) | Deterministic toolbelt (stdlib-only): current-version detection, `go build` mechanics, finished-run reduction (`analyze_run`), TeamCity baseline capture (`capture_teamcity_baseline`), and the detached suite launch (`launch_acctests`, with the correct `make`/`sh` quoting). Also exposes these as a CLI (`python -m upgrader.helpers check-env`/`baseline`/`launch`) the launch agent shells out to. |
+| [agents/](upgrader/agents) | One agent per role — `upgrade.md`, `test-launch.md`, `test.md` — loaded as the agent system prompt via `load_agent()`. Per-turn task prompts live under [upgrader/prompts/](upgrader/prompts). |
 | [upgrade.py](upgrader/upgrade.py) | Upgrade stage: one session that edits the RP until `go build ./...` is green. |
-| [acctest.py](upgrader/acctest.py) | Acctest investigation: launch full suite → watch detached PID → investigate & report (advisory, no code edits). |
-
-Prompt bodies live under [upgrader/prompts/](upgrader/prompts) as `PROMPT.md`,
-`PROMPT_ACCTEST_LAUNCH.md`, and `PROMPT_ACCTEST_COLLECT.md`. See
-[OVERVIEW.md](upgrader/OVERVIEW.md) for the high-level
-picture and roadmap (breaking-change detection).
+| [acctest.py](upgrader/acctest.py) | Acctest investigation: a launch agent resolves the RP's provider service dir + regex and starts the suite (via the helpers CLI), the orchestrator watches the detached PID + reduces the run, then a Test agent investigates & reports (advisory, no code edits). |
 
 ## Constraints (by design)
 
