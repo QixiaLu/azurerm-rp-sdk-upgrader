@@ -10,7 +10,6 @@ services:
     environment:
       # Copilot auth (required). Azure/TeamCity vars only needed for later stages.
       GH_TOKEN: ${GH_TOKEN:-}
-      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
     env_file:
       - .env
     # Override args at run time: docker compose run upgrader <rp> <ver> --repo /workspace/azurerm ...

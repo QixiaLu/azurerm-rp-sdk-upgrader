@@ -8,9 +8,12 @@ green `go build ./...`.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
-from upgrader import toolkit
-from upgrader.session import fill_prompt, read_result, run_session
+from upgrader import helpers
+from upgrader.agents import load_agent
+from upgrader.helpers import read_result
+from upgrader.session import MCPS, fill_prompt, run_session
 
 PROMPT_FILE = Path(__file__).resolve().parent / "prompts" / "PROMPT.md"
 PLAN_FILE = "IMPLEMENTATION_PLAN.md"
@@ -18,48 +21,58 @@ RESULT_FILE = "result.json"
 
 AGENT_NAME = "rp-api-upgrade"
 
-# Microsoft Learn MCP: read-only, public, no auth. Gives the breaking-change assessment
-# (SKILL.md step 6) a semantics search over published Learn docs to surface candidate changes
-# (default-value/enum/deprecation shifts). Subordinate to swagger — leads must still be
-# confirmed against Azure/azure-rest-api-specs before being classified as breaking.
-MCPS = {
-    "microsoft-learn": {
-        "type": "http",
-        "url": "https://learn.microsoft.com/api/mcp",
-        "tools": ["*"],
-    },
-}
+# Ceiling on upgrade rounds. Each round is a fresh session that does one bounded chunk of the
+# fix; after each, the orchestrator runs `go build ./...` as the authoritative convergence gate.
+# A run that hasn't gone green by here is handed to a human (see IMPLEMENTATION_PLAN.md).
+DEFAULT_MAX_ROUNDS = 8
 
-# The upgrade agent: bump one RP's SDK API version until `go build ./...` is green.
+# Cap how many compile errors are echoed into the next round's prompt (keep the turn focused;
+# fixing the first few usually clears many downstream ones).
+_BUILD_ERROR_CAP = 50
+
+
+# The durable role (identity, procedure, boundaries, result.json contract) lives in
+# agents/upgrade.md and is loaded verbatim as the system prompt; PROMPT.md carries only the
+# per-round dynamic inputs.
 AGENT_CONFIG = {
     "name": AGENT_NAME,
     "display_name": "RP API Upgrade",
     "description": "Upgrade one Azure RP SDK API version in terraform-provider-azurerm until go build succeeds.",
-    "skills": [AGENT_NAME],
-    "prompt": (
-        "You are a senior Terraform provider engineer. Upgrade one Azure RP's SDK API "
-        "version in terraform-provider-azurerm. Follow the rp-api-upgrade skill: locate "
-        "current SDK usage under internal/services/<rp_name>/, verify the target version in "
-        "the pinned go-azure-sdk, address breaking changes, run go mod tidy && "
-        "go mod vendor, fix compile errors, and confirm go build ./... passes. Make surgical "
-        "edits only and never read/diff vendor/ or go.sum."
-    ),
+    "prompt": load_agent("upgrade"),
 }
 
 
 def build_prompt(rp_name: str, target: str, old: str | None, result_path: Path,
-                 with_toolkit: bool = False) -> str:
-    if with_toolkit:
-        guidance = toolkit.instructions_text() or "(ai-assisted-development toolkit not available)"
-    else:
-        guidance = "(toolkit guidance not requested; run with --with-toolkit to include it)"
+                 plan_path: Path,
+                 *, round_no: int = 1,
+                 max_rounds: int = DEFAULT_MAX_ROUNDS,
+                 build_errors: list[dict[str, Any]] | None = None,
+                 specs_diff: str = "") -> str:
+    plan_posix = plan_path.as_posix()
+    round_context = (
+        f"This is upgrade round {round_no} of at most {max_rounds}. Prior rounds' progress is in "
+        f"{plan_posix} and result.json — continue from there; do not restart from scratch."
+    )
     return fill_prompt(PROMPT_FILE, {
         "<rp_name>": rp_name,
         "<target_api_version>": target,
         "<old_api_version>": old or "(detect current)",
         "<result_path>": result_path.as_posix(),
-        "<toolkit_guidance>": guidance,
+        "<plan_path>": plan_posix,
+        "<round_context>": round_context,
+        "<build_errors>": _format_build_errors(build_errors or []),
+        "<azure_rest_api_specs_diff>": specs_diff or "(not available)",
     })
+
+
+def _format_build_errors(errors: list[dict[str, Any]], cap: int = _BUILD_ERROR_CAP) -> str:
+    """Render structured ``go build`` errors as ``file:line:col: msg`` lines for the prompt."""
+    if not errors:
+        return "(none — the orchestrator's last build was clean or this is the first round)"
+    lines = [f"{e.get('file')}:{e.get('line')}:{e.get('col')}: {e.get('msg')}" for e in errors[:cap]]
+    if len(errors) > cap:
+        lines.append(f"... and {len(errors) - cap} more")
+    return "\n".join(lines)
 
 
 def plan_seed(rp_name: str, target: str, old: str | None) -> str:
@@ -72,16 +85,38 @@ def plan_seed(rp_name: str, target: str, old: str | None) -> str:
         "- [ ] Update imports/clients/models/enums to target version.",
         "- [ ] go mod tidy && go mod vendor.",
         "- [ ] Assess and address breaking changes per `contributing/topics/guide-breaking-changes.md`.",
-        "- [ ] Fix compile errors until `go build ./...` is green.",
+        "- [ ] Fix compile errors (resource AND `*_test.go` files) until `go build ./...` + test compile are green.",
         "",
         "## Notes",
         "- (append findings here)",
     ])
 
 
-def build_passed(result_path: Path) -> bool:
-    data = read_result(result_path)
-    return data.get("status") == "done" and data.get("build_passed") is True
+def _merge_progress(prior: dict[str, Any], round_no: int,
+                    build: dict[str, Any]) -> dict[str, Any]:
+    """Merge one round's AUTHORITATIVE build outcome over the LLM's sidecar (pure, restart-safe).
+
+    The LLM writes ``status``/``summary``/``blockers``/``api_changes`` into result.json; those are
+    preserved. The orchestrator then overwrites the fields that must be trustworthy — the real
+    ``go build`` verdict and the round tally — so a resumed run reads a truthful progress record
+    regardless of what the model claimed.
+    """
+    merged = dict(prior)
+    merged["rounds"] = round_no
+    merged["build_passed"] = bool(build.get("passed"))
+    merged["converged"] = bool(build.get("passed"))
+    merged["build_errors"] = build.get("errors", [])
+    merged["build_error_count"] = len(build.get("errors", []))
+    if build.get("passed"):
+        merged["status"] = "done"
+    elif merged.get("status") == "done":
+        merged["status"] = "in_progress"
+    return merged
+
+
+def _record_progress(result_path: Path, round_no: int, build: dict[str, Any]) -> None:
+    """Persist the merged, restart-safe progress record."""
+    helpers.write_result(result_path, _merge_progress(read_result(result_path), round_no, build))
 
 
 def _print_api_changes(result_path: Path) -> None:
@@ -89,41 +124,75 @@ def _print_api_changes(result_path: Path) -> None:
     changes = read_result(result_path).get("api_changes") or []
     if not changes:
         return
-    print(f"API-version changes ({len(changes)}):")
+    print(f"[DEBUG] API-version changes ({len(changes)}):")
     for c in changes:
         if isinstance(c, dict):
             kind, symbol, detail = c.get("kind", "?"), c.get("symbol", ""), c.get("detail", "")
-            print(f"  - [{kind}] {symbol}: {detail}".rstrip(": "))
+            print(f"[DEBUG]   - [{kind}] {symbol}: {detail}".rstrip(": "))
         else:
-            print(f"  - {c}")
+            print(f"[DEBUG]   - {c}")
 
 
-async def run_upgrade(client, run_dir: Path, *, rp_name: str, target: str, old: str | None,
-                      model: str | None, verbose: bool = False,
-                      with_toolkit: bool = False) -> bool:
-    """Run one upgrade session on an already-started client; return True iff the build is green.
+async def run_upgrade(client, run_dir: Path, *, repo: Path, rp_name: str, target: str,
+                      old: str | None, model: str | None,
+                      max_rounds: int = DEFAULT_MAX_ROUNDS,
+                      debug_tools_log: bool = False) -> bool:
+    """Drive the upgrade as a bounded round loop; return True iff `go build ./...` is green.
 
-    ``with_toolkit`` opts into injecting the allow-listed ai-assisted-development toolkit content
-    (instructions embedded in the prompt, skills via ``skill_directories``). Off by default.
+    Each round is a fresh session that does one bounded chunk of the fix. After every round the
+    ORCHESTRATOR runs ``go build ./...`` itself (``helpers.run_go_build``) — that deterministic
+    verdict, not the model's self-report, is the convergence gate, and its remaining compile
+    errors are fed verbatim into the next round. Progress (round counter + authoritative build
+    state) is merged into result.json each round so an interrupted run resumes truthfully.
     """
     result_path = run_dir / RESULT_FILE
     plan_path = run_dir / PLAN_FILE
+
+    if not old:
+        detected = helpers.detect_current_api_version(repo, rp_name)
+        if detected:
+            old = detected
+            print(f"[DEBUG] detected current API version for {rp_name}: {old}")
+
     if not plan_path.exists():
         plan_path.write_text(plan_seed(rp_name, target, old), encoding="utf-8")
-    prompt = build_prompt(rp_name, target, old, result_path, with_toolkit=with_toolkit)
 
-    extra_skill_dirs = None
-    if with_toolkit:
-        skills = toolkit.skills_dir()
-        extra_skill_dirs = [str(skills)] if skills else None
-    await run_session(client, prompt, run_dir / "upgrade.log",
-                        agent_config=AGENT_CONFIG, agent_name=AGENT_NAME, model=model,
-                        verbose=verbose, extra_skill_dirs=extra_skill_dirs,
-                        mcp_servers=MCPS)
-    if build_passed(result_path):
-        print(f"build green; logs in {run_dir}")
-        _print_api_changes(result_path)
-        return True
-    else:
-        print("build failed;")
-        return False
+    specs_diff = helpers.format_azure_rest_api_specs_diff(
+        helpers.collect_azure_rest_api_specs_context(rp_name, target, old)
+    )
+
+    prior_rounds = int(read_result(result_path).get("rounds", 0) or 0)
+    total_round_limit = prior_rounds + max_rounds
+
+    build: dict[str, Any] = {"passed": False, "errors": []}
+    for i in range(max_rounds):
+        round_no = prior_rounds + i + 1
+        print(f"=== upgrade round {round_no}/{total_round_limit} "
+              f"({len(build['errors'])} compile error(s) to clear) ===")
+        prompt = build_prompt(
+            rp_name,
+            target,
+            old,
+            result_path,
+            plan_path,
+            round_no=round_no,
+            max_rounds=total_round_limit,
+            build_errors=build["errors"],
+            specs_diff=specs_diff,
+        )
+        await run_session(client, prompt,
+                          agent_config=AGENT_CONFIG, agent_name=AGENT_NAME, model=model,
+                          mcp_servers=MCPS,
+                          debug_tools_log=debug_tools_log)
+        build = helpers.run_go_build(repo)  # AUTHORITATIVE convergence check
+        _record_progress(result_path, round_no, build)
+        if build["passed"]:
+            print(f"[DEBUG] build green after round {round_no}; result.json in {run_dir}")
+            _print_api_changes(result_path)
+            return True
+        print(f"[DEBUG] round {round_no}: build still failing "
+              f"({len(build['errors'])} error(s)); continuing.")
+
+    print(f"[DEBUG] did not converge after {max_rounds} round(s); "
+          "see IMPLEMENTATION_PLAN.md and result.json.")
+    return False

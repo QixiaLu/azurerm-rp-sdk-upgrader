@@ -1,3 +1,0 @@
-[submodule "submodule/aii"]
-	path = submodule/aii
-	url = https://github.com/WodansSon/terraform-azurerm-ai-assisted-development
