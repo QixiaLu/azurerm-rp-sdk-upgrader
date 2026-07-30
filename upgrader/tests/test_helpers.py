@@ -190,6 +190,19 @@ class TestUpgradeProgress(unittest.TestCase):
         merged = upgrade._merge_progress({"rounds": 4}, 5, {"passed": False, "errors": []})
         self.assertEqual(merged["rounds"], 5)
 
+    def test_merge_tags_and_counts_schema_impacting_changes(self):
+        prior = {"api_changes": [
+            {"kind": "added", "symbol": "ExportProperties.compressionMode",
+             "detail": "New optional field."},
+            {"kind": "removed", "symbol": "views.*ByScope",
+             "detail": "Moved out of the views package; client type ViewsClient -> "
+                       "ViewOperationGroupClient."},
+        ]}
+        merged = upgrade._merge_progress(prior, 1, {"passed": True, "errors": []})
+        self.assertEqual(merged["api_changes"][0]["schema_impact"], "schema")
+        self.assertEqual(merged["api_changes"][1]["schema_impact"], "sdk")
+        self.assertEqual(merged["schema_impacting_change_count"], 1)
+
 
 class TeamCityBaselineTests(unittest.TestCase):
     def test_service_build_type_id_expands_service(self):
@@ -397,6 +410,122 @@ class AzureSpecsContextTests(unittest.TestCase):
         finally:
             helpers.collect_azure_rest_api_specs_context = original_collect
             helpers.format_azure_rest_api_specs_context = original_format
+
+
+class SchemaImpactTests(unittest.TestCase):
+    """Real `api_changes` entries from a costmanagement upgrade run."""
+
+    SDK_ONLY = [
+        {
+            "kind": "removed",
+            "symbol": "scheduledactions.*ByScope + ScopedScheduledAction ID",
+            "detail": ("Scope-based operations and the ScopedScheduledAction resource ID moved "
+                       "out of the scheduledactions package into the new "
+                       "scheduledactionoperationgroup package; byscope methods gained a "
+                       "ScheduledActions prefix (e.g. CreateOrUpdateByScope -> "
+                       "ScheduledActionsCreateOrUpdateByScope). Client type "
+                       "ScheduledActionsClient -> ScheduledActionOperationGroupClient."),
+        },
+        {
+            "kind": "removed",
+            "symbol": "views.*ByScope + ScopedView ID",
+            "detail": ("Scope-based operations and the ScopedView resource ID moved out of the "
+                       "views package into the new viewoperationgroup package; byscope methods "
+                       "gained a Views prefix (e.g. GetByScope -> ViewsGetByScope). Client type "
+                       "ViewsClient -> ViewOperationGroupClient."),
+        },
+        {
+            "kind": "removed",
+            "symbol": "scheduledactions.CheckNameAvailability*",
+            "detail": ("CheckNameAvailability/CheckNameAvailabilityByScope operations and their "
+                       "request/response models plus CheckNameAvailabilityReason enum were "
+                       "removed. Provider never used them."),
+        },
+        {
+            "kind": "behavior",
+            "symbol": "exports.ExportsClient.Execute",
+            "detail": ("Execute now requires an additional ExportRunRequest input argument. "
+                       "Provider does not call Execute, so no change was needed."),
+        },
+    ]
+
+    SCHEMA = [
+        {
+            "kind": "added",
+            "symbol": "exports.CommonExportProperties/ExportProperties fields",
+            "detail": ("New optional fields: CompressionMode, DataOverwriteBehavior, "
+                       "ExportDescription, SystemSuspensionContext, plus View/Export SystemData "
+                       "and dataset DataVersion/Filters, delivery-destination Type, and "
+                       "export-run StartDate/EndDate/ManifestFile. Additive; not surfaced in "
+                       "schema this round."),
+        },
+        {
+            "kind": "enum-changed",
+            "symbol": "exports.ExportType/FormatType/GranularityType",
+            "detail": ("New enum values added: ExportType FocusCost/PriceSheet/"
+                       "ReservationDetails/ReservationRecommendations/ReservationTransactions; "
+                       "FormatType Parquet; GranularityType Monthly; new CompressionModeType, "
+                       "DataOverwriteBehaviorType, DestinationType, FilterItemNames enums. No "
+                       "existing value removed."),
+        },
+    ]
+
+    def test_sdk_plumbing_is_not_schema_impacting(self):
+        for change in self.SDK_ONLY:
+            with self.subTest(symbol=change["symbol"]):
+                self.assertEqual(helpers.classify_schema_impact(change), "sdk")
+
+    def test_schema_surface_changes_are_flagged(self):
+        for change in self.SCHEMA:
+            with self.subTest(symbol=change["symbol"]):
+                self.assertEqual(helpers.classify_schema_impact(change), "schema")
+
+    def test_default_and_type_changes_are_schema(self):
+        self.assertEqual(helpers.classify_schema_impact(
+            {"kind": "default-changed", "symbol": "sku.tier",
+             "detail": "Default changed from Standard to Premium."}), "schema")
+        self.assertEqual(helpers.classify_schema_impact(
+            {"kind": "renamed", "symbol": "properties.retentionDays",
+             "detail": "Type changed from integer to string."}), "schema")
+
+    def test_removed_property_is_schema_not_sdk(self):
+        self.assertEqual(helpers.classify_schema_impact(
+            {"kind": "removed", "symbol": "ExportProperties.legacyField",
+             "detail": "The legacyField property was removed from the payload."}), "schema")
+
+    def test_unknown_prose_defaults_to_schema(self):
+        # Fail-safe: an unclassifiable change is surfaced, never silently hidden.
+        self.assertEqual(helpers.classify_schema_impact(
+            {"kind": "behavior", "symbol": "x", "detail": "something happened"}), "schema")
+        self.assertEqual(helpers.classify_schema_impact({}), "schema")
+
+    def test_tagging_trusts_valid_agent_label(self):
+        out = helpers.tag_api_changes_schema_impact(
+            [{"kind": "removed", "symbol": "views.*ByScope",
+              "detail": "moved out of the views package", "schema_impact": "schema"}])
+        self.assertEqual(out[0]["schema_impact"], "schema")
+
+    def test_tagging_overrides_invalid_agent_label(self):
+        out = helpers.tag_api_changes_schema_impact(
+            [{"kind": "added", "symbol": "s", "detail": "New optional field foo.",
+              "schema_impact": "maybe?"}])
+        self.assertEqual(out[0]["schema_impact"], "schema")
+
+    def test_tagging_is_total_and_non_mutating(self):
+        source = list(self.SDK_ONLY + self.SCHEMA)
+        out = helpers.tag_api_changes_schema_impact(source)
+        self.assertEqual(len(out), len(source))
+        self.assertTrue(all("schema_impact" in c for c in out))
+        self.assertTrue(all("schema_impact" not in c for c in source))  # inputs untouched
+
+    def test_schema_impacting_filter_keeps_only_schema_entries(self):
+        only = helpers.schema_impacting_changes(self.SDK_ONLY + self.SCHEMA)
+        self.assertEqual(len(only), len(self.SCHEMA))
+        self.assertEqual([c["symbol"] for c in only], [c["symbol"] for c in self.SCHEMA])
+
+    def test_non_list_input_is_safe(self):
+        self.assertEqual(helpers.tag_api_changes_schema_impact(None), [])
+        self.assertEqual(helpers.schema_impacting_changes(None), [])
 
 
 if __name__ == "__main__":

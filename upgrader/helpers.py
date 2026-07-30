@@ -44,6 +44,9 @@ __all__ = [
     "collect_azure_rest_api_specs_context",
     "format_azure_rest_api_specs_context",
     "format_azure_rest_api_specs_diff",
+    "classify_schema_impact",
+    "tag_api_changes_schema_impact",
+    "schema_impacting_changes",
     # teamcity baseline
     "service_build_type_id",
     "capture_teamcity_baseline",
@@ -502,6 +505,108 @@ def _diff_operation_signatures(old_ops: list[dict[str, str]],
         "added": sorted(new_set - old_set),
         "removed": sorted(old_set - new_set),
     }
+
+
+# --- schema-impact classification -------------------------------------------
+#
+# An SDK API bump produces two very different kinds of change, and mixing them
+# makes the list hard to review:
+#
+#   * **schema** — reaches the provider's user-facing surface: new/removed
+#     properties, changed defaults/types/validation, enum members added/removed.
+#     These need a schema decision (surface it? gate it? deprecate it?).
+#   * **sdk** — pure plumbing that a green build already settled: sub-package
+#     moves, client/method renames, resource-ID type relocation, operations the
+#     provider never calls.
+#
+# Both stay in ``api_changes`` (never drop evidence), but each is tagged so a
+# reviewer can jump straight to the schema-relevant subset.
+
+_SCHEMA_IMPACT_SCHEMA = "schema"
+_SCHEMA_IMPACT_SDK = "sdk"
+_SCHEMA_IMPACT_VALUES = frozenset({_SCHEMA_IMPACT_SCHEMA, _SCHEMA_IMPACT_SDK})
+
+# (regex, weight) — weight 2+ marks a decisive signal.
+_SCHEMA_SIGNALS: tuple[tuple[re.Pattern[str], int], ...] = tuple(
+    (re.compile(pat), w) for pat, w in (
+        (r"\bdefaults?\b", 2),
+        (r"\benum (?:value|member|constant)s?\b", 2),
+        (r"\b(?:now |no longer )?(?:required|optional)\b", 2),
+        (r"\btype (?:changed|is now)\b|\bchanged type\b|\bretyped\b", 2),
+        (r"\bvalidation\b", 2),
+        (r"\bcomputed\b", 2),
+        (r"\bfields?\b", 1),
+        (r"\bpropert(?:y|ies)\b", 1),
+        (r"\battributes?\b", 1),
+        (r"\bschema\b", 1),
+        (r"\brenamed\b", 1),
+    )
+)
+
+_SDK_SIGNALS: tuple[tuple[re.Pattern[str], int], ...] = tuple(
+    (re.compile(pat), w) for pat, w in (
+        # explicit "this never reaches our code" statements from the agent
+        (r"\bprovider (?:does not|doesn'?t|never|did not) (?:call|use|invoke)", 3),
+        (r"\b(?:not|never) (?:called|used|invoked) by the provider\b", 3),
+        (r"\bno (?:change|changes) (?:was|were) needed\b", 3),
+        (r"\bunused by the provider\b", 3),
+        # pure SDK-shape churn
+        (r"\bmoved (?:out of|from|into|to)\b", 2),
+        (r"\bsub-?packages?\b|\bpackages?\b", 2),
+        (r"\bclient type\b|\bclient (?:was )?renamed\b|client\b.*->", 2),
+        (r"\bimport paths?\b", 2),
+        (r"\bresource id\b|\bid type\b", 1),
+        (r"\bmethods? (?:gained|renamed|now)\b", 1),
+        (r"\boperation ?ids?\b", 1),
+    )
+)
+
+
+def _signal_score(text: str, signals: tuple[tuple[re.Pattern[str], int], ...]) -> int:
+    return sum(weight for pattern, weight in signals if pattern.search(text))
+
+
+def classify_schema_impact(change: dict[str, Any]) -> str:
+    """Classify one ``api_changes`` entry as ``"schema"`` or ``"sdk"`` (pure).
+
+    Scores the symbol+detail prose against two signal sets. Ties resolve to
+    ``"schema"`` deliberately: a false "needs a look" costs a reviewer a glance,
+    a false "plumbing only" hides a user-visible break.
+    """
+    text = f"{change.get('symbol') or ''} {change.get('detail') or ''}".lower()
+    if not text.strip():
+        return _SCHEMA_IMPACT_SCHEMA
+    return (_SCHEMA_IMPACT_SDK
+            if _signal_score(text, _SDK_SIGNALS) > _signal_score(text, _SCHEMA_SIGNALS)
+            else _SCHEMA_IMPACT_SCHEMA)
+
+
+def tag_api_changes_schema_impact(api_changes: Any) -> list[Any]:
+    """Stamp every ``api_changes`` entry with a ``schema_impact`` tag (pure).
+
+    An explicit, valid tag from the agent is trusted; anything missing or bogus is
+    derived by :func:`classify_schema_impact` so the field is always present and
+    always one of the two known values.
+    """
+    if not isinstance(api_changes, list):
+        return []
+    out: list[Any] = []
+    for change in api_changes:
+        if not isinstance(change, dict):
+            out.append(change)
+            continue
+        row = dict(change)
+        claimed = str(row.get("schema_impact") or "").strip().lower()
+        row["schema_impact"] = (claimed if claimed in _SCHEMA_IMPACT_VALUES
+                                else classify_schema_impact(row))
+        out.append(row)
+    return out
+
+
+def schema_impacting_changes(api_changes: Any) -> list[dict[str, Any]]:
+    """Return only the entries that touch the provider's schema surface."""
+    return [c for c in tag_api_changes_schema_impact(api_changes)
+            if isinstance(c, dict) and c.get("schema_impact") == _SCHEMA_IMPACT_SCHEMA]
 
 
 def collect_azure_rest_api_specs_context(rp_name: str, target_api_version: str,

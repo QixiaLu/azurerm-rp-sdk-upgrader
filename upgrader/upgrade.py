@@ -99,7 +99,8 @@ def _merge_progress(prior: dict[str, Any], round_no: int,
     The LLM writes ``status``/``summary``/``blockers``/``api_changes`` into result.json; those are
     preserved. The orchestrator then overwrites the fields that must be trustworthy — the real
     ``go build`` verdict and the round tally — so a resumed run reads a truthful progress record
-    regardless of what the model claimed.
+    regardless of what the model claimed, and tags each ``api_changes`` entry with its
+    ``schema_impact`` so schema-surface changes are separable from SDK-only churn.
     """
     merged = dict(prior)
     merged["rounds"] = round_no
@@ -107,6 +108,13 @@ def _merge_progress(prior: dict[str, Any], round_no: int,
     merged["converged"] = bool(build.get("passed"))
     merged["build_errors"] = build.get("errors", [])
     merged["build_error_count"] = len(build.get("errors", []))
+    if merged.get("api_changes"):
+        # Separate real schema-surface changes from SDK-only plumbing (package moves,
+        # client/method renames, operations the provider never calls) so a reviewer
+        # isn't wading through churn a green build already settled.
+        changes = helpers.tag_api_changes_schema_impact(merged["api_changes"])
+        merged["api_changes"] = changes
+        merged["schema_impacting_change_count"] = len(helpers.schema_impacting_changes(changes))
     if build.get("passed"):
         merged["status"] = "done"
     elif merged.get("status") == "done":
@@ -120,17 +128,29 @@ def _record_progress(result_path: Path, round_no: int, build: dict[str, Any]) ->
 
 
 def _print_api_changes(result_path: Path) -> None:
-    """Surface the target API version's notable changes (new fields, etc.) from result.json."""
+    """Surface the target API version's notable changes (new fields, etc.) from result.json.
+
+    Schema-surface changes print first and in full — they're the ones needing a human
+    decision; the SDK-only plumbing is collapsed to a count.
+    """
     changes = read_result(result_path).get("api_changes") or []
     if not changes:
         return
-    print(f"[DEBUG] API-version changes ({len(changes)}):")
-    for c in changes:
-        if isinstance(c, dict):
-            kind, symbol, detail = c.get("kind", "?"), c.get("symbol", ""), c.get("detail", "")
-            print(f"[DEBUG]   - [{kind}] {symbol}: {detail}".rstrip(": "))
-        else:
+    tagged = helpers.tag_api_changes_schema_impact(changes)
+    schema = [c for c in tagged if isinstance(c, dict) and c.get("schema_impact") == "schema"]
+    sdk_only = len(tagged) - len(schema)
+
+    print(f"[DEBUG] API-version changes ({len(tagged)}); "
+          f"{len(schema)} touch the provider schema:")
+    for c in schema:
+        kind, symbol, detail = c.get("kind", "?"), c.get("symbol", ""), c.get("detail", "")
+        print(f"[DEBUG]   - [{kind}] {symbol}: {detail}".rstrip(": "))
+    for c in tagged:
+        if not isinstance(c, dict):
             print(f"[DEBUG]   - {c}")
+    if sdk_only:
+        print(f"[DEBUG]   (+{sdk_only} SDK-only change(s) — package/client/method churn, "
+              "no schema impact; see result.json)")
 
 
 async def run_upgrade(client, run_dir: Path, *, repo: Path, rp_name: str, target: str,

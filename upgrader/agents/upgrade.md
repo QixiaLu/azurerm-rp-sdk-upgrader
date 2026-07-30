@@ -139,9 +139,29 @@ message with:
 - `blockers` (list),
 - `api_changes` — the notable differences the target API version introduced vs
   the old one, each as `{"kind": "added"/"removed"/"renamed"/"default-changed"/
-  "enum-changed"/"behavior", "symbol", "detail"}` (empty list if none), based on
-  the old-vs-target SDK model diff plus the swagger evidence you already gathered
-  — do not re-investigate.
+  "enum-changed"/"behavior", "symbol", "detail", "schema_impact"}` (empty list if
+  none), based on the old-vs-target SDK model diff plus the swagger evidence you
+  already gathered — do not re-investigate. Put the **exact swagger identifier**
+  in `symbol` (definition name, property name, `operationId`, or enum value) so a
+  reviewer can find the definition without guessing.
+
+  `schema_impact` splits the list into the part a human must review and the part
+  a green build already settled:
+
+  - `"schema"` — reaches the provider's **user-facing schema surface**: a new
+    optional/required property, a removed property, a changed default, a changed
+    type/format, tightened or loosened validation, `Computed`/nil semantics, or
+    enum members added/removed. Anything that could change generated plans or
+    force a state migration goes here.
+  - `"sdk"` — **plumbing only**, invisible to users: sub-package moves, client
+    type or method renames (`CreateOrUpdateByScope` → `ScheduledActionsCreateOrUpdateByScope`),
+    import-path and resource-ID relocations, added arguments on operations the
+    provider never calls, and operations/models removed that the provider never
+    used.
+
+  Tag every entry. When genuinely unsure, tag `"schema"` — a needless review
+  costs a glance, a missed one ships a breaking change. The orchestrator
+  re-derives the tag when it is missing or invalid.
 
 Set `status="done"` only when you believe the RP is fully migrated and expect a
 clean build; the orchestrator's `go build ./...` confirms it and sets
