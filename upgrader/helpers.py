@@ -24,6 +24,8 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
+from upgrader import credentials
+
 __all__ = [
     # result sidecar
     "read_result",
@@ -779,8 +781,8 @@ _TEAMCITY_MAX_RETRIES = 3
 
 
 def _teamcity_token() -> str | None:
-    """Return the TeamCity token from either supported env var, or ``None``."""
-    return os.environ.get("TEAMCITY_TOKEN") or os.environ.get("TEAMCITY_ACCESSTOKEN")
+    """Return the TeamCity token from either supported name, or ``None``."""
+    return credentials.get("TEAMCITY_TOKEN") or credentials.get("TEAMCITY_ACCESSTOKEN")
 
 
 def _teamcity_base_url() -> str:
@@ -910,9 +912,14 @@ ACCTEST_REQUIRED_ENV = (
 
 
 def missing_acctest_env(env: dict[str, str] | None = None) -> list[str]:
-    """Return the required ARM_* vars that are absent/empty (empty list = all present)."""
-    src = os.environ if env is None else env
-    return [k for k in ACCTEST_REQUIRED_ENV if not src.get(k)]
+    """Return the required ARM_* vars that are absent/empty (empty list = all present).
+
+    With no explicit ``env`` these resolve through the credential store, since the ARM_*
+    set is deliberately kept out of ``os.environ``.
+    """
+    if env is not None:
+        return [k for k in ACCTEST_REQUIRED_ENV if not env.get(k)]
+    return [k for k in ACCTEST_REQUIRED_ENV if not credentials.get(k)]
 
 
 def make_testargs(test_regex: str, parallel: int) -> str:
@@ -965,6 +972,8 @@ def launch_acctests(repo: str | Path, acctest_dir: str | Path, *, rp_name: str,
 
     popen_kwargs: dict[str, Any] = {
         "cwd": str(repo), "stdout": out, "stderr": err, "stdin": subprocess.DEVNULL,
+        # the only process that gets the service principal
+        "env": credentials.subprocess_env(*ACCTEST_REQUIRED_ENV),
     }
     if os.name == "posix":  # detach into its own session so it survives orchestrator exit
         popen_kwargs["start_new_session"] = True
@@ -1164,6 +1173,7 @@ def _main(argv: list[str] | None = None) -> int:
                    help="Print metadata JSON with rendered text instead of plain text.")
 
     args = p.parse_args(argv)
+    credentials.load()  # agent-spawned; the secrets are not in this process's environment
     if args.cmd == "check-env":
         return _cli_check_env()
     if args.cmd == "baseline":

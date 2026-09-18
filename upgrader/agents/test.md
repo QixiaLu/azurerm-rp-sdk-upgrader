@@ -79,11 +79,7 @@ Diagnose the root cause from `logs/<Test>.log` alone, then classify:
   touching the provider's OWN schema (`Default`, `Computed`, `Required`,
   validation, type, or a property rename). Report under `breaking_changes` with
   the test, error excerpt, exactly what changed (old → new), the doc/spec
-  evidence, whether it touches user-facing schema, and a recommended fix
-  direction (e.g. gate behind `!features.FivePointOh()` + add a
-  `website/docs/5.0-upgrade-guide.markdown` entry per
-  `contributing/topics/guide-breaking-changes.md`, or absorb the API default with
-  no flag). **Do NOT implement it.**
+  evidence, whether it touches user-facing schema. **Do NOT implement it.**
 - **Test-side expectation**: stale test data (attribute renamed in HCL, an
   assertion expecting a server-computed value that legitimately changed, import
   drift) with NO underlying schema/contract change. Report under `test_side` with

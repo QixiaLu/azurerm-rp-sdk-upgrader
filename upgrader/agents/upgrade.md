@@ -41,8 +41,14 @@ did, do one bounded chunk, update the plan, write `result.json`, and exit. Do
 1. **Discover** all versioned SDK imports and usage in
    `internal/services/<rp_name>/` (this repo mixes versions per SDK sub-package,
    so check each).
-2. **Verify the target API version is shipped by the currently pinned
-   `go-azure-sdk`** (check the module, NOT `vendor/`, which only holds
+2. **Verify the target API version is available.** If the task message's
+   `local_sdk_dir` is set, a prebuild already generated the target version and
+   pointed `go.mod` at it with a `replace` directive — **skip the rest of this
+   step and go to step 3.** That version is deliberately not published upstream,
+   so every check below would wrongly conclude it does not exist and stop the
+   run. Never `go get` go-azure-sdk in this mode; it would drop the `replace`.
+   Otherwise, verify the version is shipped by the currently pinned
+   `go-azure-sdk` (check the module, NOT `vendor/`, which only holds
    already-imported versions):
    - `go list -mod=mod github.com/hashicorp/go-azure-sdk/resource-manager/<rp_name>/<target_api_version>/<subpackage>`
      (or inspect `"$(go env GOMODCACHE)/github.com/hashicorp/go-azure-sdk/resource-manager@<pinned-version>/<rp_name>/<target_api_version>"`).
@@ -63,12 +69,19 @@ did, do one bounded chunk, update the plan, write `result.json`, and exit. Do
 4. **Sync vendor:** `go mod tidy` then `go mod vendor` so the now-imported target
    sub-package is pulled into `vendor/` (and any step-2 bump is applied).
    Long-running — run with a generous timeout and pipe through `tail`. Confirm
-   with a single path check.
+   with a single path check. When `local_sdk_dir` is set, leave the existing
+   `replace` directive alone — it is what makes the target version resolvable.
 5. **Update impacted symbols** — trace data flow (expand/flatten + schema), not
    just the compile error. Prefer adapting local mapping/expand/flatten helpers
    over broad refactors.
 6. **Breaking-change assessment.** Confirm suspected changes against the
    **target API version**:
+   - a change is breaking when it can disrupt existing users, including but not
+     limited to either of these scenarios:
+     - existing Terraform configuration must be changed before users can adopt
+       a newer minor or patch version of the AzureRM provider; or
+     - changed behavior causes Terraform validation failures or state drift for
+       configurations used with the current AzureRM provider version;
    - first, use the deterministic old-vs-target swagger diff provided in the task
      prompt as the starting evidence map;
    - diff the **swagger** in `Azure/azure-rest-api-specs` for the affected property
@@ -85,6 +98,10 @@ did, do one bounded chunk, update the plan, write `result.json`, and exit. Do
      is the authoritative evidence; MS Learn is a prose aid);
    - classify: resource/data-source removal, schema rename/type/default/validation
      change, behavior/default-value change;
+   - explicitly assess every user-facing change as breaking or non-breaking;
+     record the conclusion, supporting evidence, and user impact in the
+     corresponding `api_changes` entry rather than assuming a successful build
+     means the change is compatible;
    - mitigate per the repo's `contributing/topics/guide-breaking-changes.md`; for
      unavoidable changes apply transitional patterns (deprecation messaging,
      `features.FivePointOh()` gating, conditional registration, staged tests);
@@ -110,6 +127,8 @@ did, do one bounded chunk, update the plan, write `result.json`, and exit. Do
 - Bump `go-azure-sdk` in `go.mod` **only** when the target API is absent from the
   pinned module but exists upstream (step 2); use `go get` with the **minimum**
   version, not latest. If already pinned, don't touch `go.mod` — just re-vendor.
+  If `local_sdk_dir` is set, never bump: the version resolves through the local
+  `replace`, not through a published release.
 - Keep edits minimal and localized to the target RP unless transitive compile
   errors require wider changes.
 

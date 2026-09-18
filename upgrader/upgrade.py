@@ -18,6 +18,7 @@ from upgrader.session import MCPS, fill_prompt, run_session
 PROMPT_FILE = Path(__file__).resolve().parent / "prompts" / "PROMPT.md"
 PLAN_FILE = "IMPLEMENTATION_PLAN.md"
 RESULT_FILE = "result.json"
+PREBUILD_FILE = "prebuild.json"
 
 AGENT_NAME = "rp-api-upgrade"
 
@@ -47,7 +48,8 @@ def build_prompt(rp_name: str, target: str, old: str | None, result_path: Path,
                  *, round_no: int = 1,
                  max_rounds: int = DEFAULT_MAX_ROUNDS,
                  build_errors: list[dict[str, Any]] | None = None,
-                 specs_diff: str = "") -> str:
+                 specs_diff: str = "",
+                 local_sdk: str = "") -> str:
     plan_posix = plan_path.as_posix()
     round_context = (
         f"This is upgrade round {round_no} of at most {max_rounds}. Prior rounds' progress is in "
@@ -57,12 +59,25 @@ def build_prompt(rp_name: str, target: str, old: str | None, result_path: Path,
         "<rp_name>": rp_name,
         "<target_api_version>": target,
         "<old_api_version>": old or "(detect current)",
+        "<local_sdk>": local_sdk or "(none — resolve the target version from a published release)",
         "<result_path>": result_path.as_posix(),
         "<plan_path>": plan_posix,
         "<round_context>": round_context,
         "<build_errors>": _format_build_errors(build_errors or []),
         "<azure_rest_api_specs_diff>": specs_diff or "(not available)",
     })
+
+
+def _local_sdk_dir(run_dir: Path) -> str:
+    """Where a successful ``--prebuild-local-sdk`` put the generated SDK, else ``""``.
+
+    A prebuilt version is deliberately absent upstream, so the agent must skip the
+    "is it published?" check that would otherwise abort the run.
+    """
+    prebuild = read_result(run_dir / PREBUILD_FILE)
+    if prebuild.get("status") != "success":
+        return ""
+    return str(prebuild.get("sdk_dir") or "")
 
 
 def _format_build_errors(errors: list[dict[str, Any]], cap: int = _BUILD_ERROR_CAP) -> str:
@@ -84,7 +99,7 @@ def plan_seed(rp_name: str, target: str, old: str | None) -> str:
         "- [ ] Confirm target API version is published; bump go-azure-sdk if needed.",
         "- [ ] Update imports/clients/models/enums to target version.",
         "- [ ] go mod tidy && go mod vendor.",
-        "- [ ] Assess and address breaking changes per `contributing/topics/guide-breaking-changes.md`.",
+        "- [ ] Assess every user-facing API change as breaking or non-breaking; record evidence and user impact.",
         "- [ ] Fix compile errors (resource AND `*_test.go` files) until `go build ./...` + test compile are green.",
         "",
         "## Notes",
@@ -181,6 +196,11 @@ async def run_upgrade(client, run_dir: Path, *, repo: Path, rp_name: str, target
         helpers.collect_azure_rest_api_specs_context(rp_name, target, old)
     )
 
+    local_sdk = _local_sdk_dir(run_dir)
+    if local_sdk:
+        print(f"[DEBUG] local SDK prebuild detected at {local_sdk}; "
+              "the agent will skip the upstream-publication check")
+
     prior_rounds = int(read_result(result_path).get("rounds", 0) or 0)
     total_round_limit = prior_rounds + max_rounds
 
@@ -199,6 +219,7 @@ async def run_upgrade(client, run_dir: Path, *, repo: Path, rp_name: str, target
             max_rounds=total_round_limit,
             build_errors=build["errors"],
             specs_diff=specs_diff,
+            local_sdk=local_sdk,
         )
         await run_session(client, prompt,
                           agent_config=AGENT_CONFIG, agent_name=AGENT_NAME, model=model,

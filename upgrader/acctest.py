@@ -72,6 +72,7 @@ def _build_launch_prompt(rp_name: str, *, test_regex: str, parallel: int, repo: 
         "<test_regex>": test_regex,
         "<parallel>": str(parallel),
         "<repo>": repo.as_posix(),
+        "<upgrader_root>": Path(__file__).resolve().parent.parent.as_posix(),
         "<acctest_dir>": acctest_dir.as_posix(),
         "<result_path>": result_path.as_posix(),
     })
@@ -144,9 +145,33 @@ def _read_pid(pid_file: Path) -> int | None:
 
 
 def _pid_alive(pid: int) -> bool:
-    """Best-effort POSIX liveness check (the supported runtime is the Linux sandbox)."""
+    """Return whether a process is alive on the local platform."""
     if pid <= 0:
         return False
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        process_query_limited_information = 0x1000
+        still_active = 259
+        error_access_denied = 5
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, wintypes.LPDWORD]
+        kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+
+        handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+        if not handle:
+            return ctypes.get_last_error() == error_access_denied
+        try:
+            exit_code = wintypes.DWORD()
+            return bool(kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))) and \
+                exit_code.value == still_active
+        finally:
+            kernel32.CloseHandle(handle)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:

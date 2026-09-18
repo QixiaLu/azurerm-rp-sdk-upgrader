@@ -2,6 +2,7 @@ Inputs:
   rp_name: <rp_name>
   target_api_version: <target_api_version>
   old_api_version: <old_api_version>
+  local_sdk_dir: <local_sdk>
   result_path: <result_path>
   plan_path: <plan_path>
 
