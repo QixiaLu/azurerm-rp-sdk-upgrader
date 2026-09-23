@@ -118,15 +118,15 @@ class TestRunPrebuild(unittest.TestCase):
 class TestCliArguments(unittest.TestCase):
     def _base(self) -> list[str]:
         # --env-file points at nothing so a real ./.env can't leak into the test process
-        return ["network", "2025-07-01", "--repo", "azurerm", "--skip-acctest",
+        return ["network", "2025-07-01", "--repo", "azurerm",
                 "--env-file", "no-such.env"]
 
     def test_prebuild_requires_all_local_arguments(self):
         with self.assertRaises(SystemExit) as raised:
-            cli.main(self._base() + ["--prebuild-local-sdk", "--pandora-repo", "pandora"])
+            cli.main(self._base() + ["--stage", "prebuild", "--pandora-repo", "pandora"])
         self.assertEqual(raised.exception.code, 2)
 
-    def test_local_arguments_require_prebuild_flag(self):
+    def test_local_arguments_require_prebuild_stage(self):
         with self.assertRaises(SystemExit) as raised:
             cli.main(self._base() + ["--pandora-service", "Network"])
         self.assertEqual(raised.exception.code, 2)
@@ -134,7 +134,7 @@ class TestCliArguments(unittest.TestCase):
     @patch("upgrader.cli.run", return_value=True)
     def test_valid_prebuild_arguments_are_forwarded(self, run):
         result = cli.main(self._base() + [
-            "--prebuild-local-sdk",
+            "--stage", "prebuild",
             "--pandora-repo", "pandora",
             "--go-azure-sdk-repo", "go-azure-sdk",
             "--pandora-service", "Network",
@@ -146,6 +146,60 @@ class TestCliArguments(unittest.TestCase):
         self.assertEqual(kwargs["pandora_service"], "Network")
         self.assertTrue(kwargs["pandora_repo"].is_absolute())
         self.assertTrue(kwargs["go_azure_sdk_repo"].is_absolute())
+
+    def test_breaking_change_stage_requires_provider_version(self):
+        with self.assertRaises(SystemExit) as raised:
+            cli.main(self._base() + ["--stage", "breaking-change"])
+        self.assertEqual(raised.exception.code, 2)
+
+    @patch("upgrader.cli.run", return_value=True)
+    def test_breaking_change_arguments_are_forwarded(self, run):
+        result = cli.main(self._base() + [
+            "--stage", "breaking-change",
+            "--provider-version", "4.77.0",
+        ])
+
+        self.assertEqual(result, 0)
+        kwargs = run.call_args.kwargs
+        self.assertFalse(kwargs["run_execute"])
+        self.assertFalse(kwargs["run_acctest"])
+        self.assertEqual(kwargs["breaking_change_provider_version"], "4.77.0")
+
+    @patch("upgrader.cli.run", return_value=True)
+    def test_default_stages_are_upgrade_and_acctest(self, run):
+        result = cli.main(self._base())
+
+        self.assertEqual(result, 0)
+        kwargs = run.call_args.kwargs
+        self.assertTrue(kwargs["run_execute"])
+        self.assertTrue(kwargs["run_acctest"])
+        self.assertFalse(kwargs["prebuild_local_sdk"])
+        self.assertIsNone(kwargs["breaking_change_provider_version"])
+
+    @patch("upgrader.cli.run", return_value=True)
+    def test_explicit_stages_replace_default_stages(self, run):
+        result = cli.main(self._base() + [
+            "--stage", "upgrade",
+            "--stage", "breaking-change",
+            "--provider-version", "4.77.0",
+        ])
+
+        self.assertEqual(result, 0)
+        kwargs = run.call_args.kwargs
+        self.assertTrue(kwargs["run_execute"])
+        self.assertFalse(kwargs["run_acctest"])
+        self.assertEqual(kwargs["breaking_change_provider_version"], "4.77.0")
+
+    def test_stage_specific_arguments_require_their_stage(self):
+        with self.assertRaises(SystemExit) as raised:
+            cli.main(self._base() + ["--provider-version", "4.77.0"])
+        self.assertEqual(raised.exception.code, 2)
+
+    def test_bounded_work_options_must_be_positive(self):
+        for option in ("--parallel", "--max-rounds"):
+            with self.subTest(option=option), self.assertRaises(SystemExit) as raised:
+                cli.main(self._base() + [option, "0"])
+            self.assertEqual(raised.exception.code, 2)
 
 
 class TestEnvFile(unittest.TestCase):

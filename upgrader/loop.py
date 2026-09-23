@@ -1,4 +1,4 @@
-"""Top-level orchestration: run the upgrade stage, then (optionally) acctest triage.
+"""Top-level orchestration for the upgrade pipeline and optional detector stage.
 
 Each stage owns a fresh Copilot client for its run; disk is the shared state between
 turns and between stages.
@@ -10,7 +10,7 @@ import asyncio
 from pathlib import Path
 from typing import Awaitable, Callable
 
-from upgrader import acctest, prebuild, upgrade
+from upgrader import acctest, breaking_change, prebuild, upgrade
 
 
 async def _with_client(repo: Path, run: Callable[[object], Awaitable[bool]]) -> bool:
@@ -32,15 +32,15 @@ def run(repo: Path, rp_name: str, target: str, old: str | None, *,
     max_rounds: int = 8,
     debug_tools_log: bool = False,
     prebuild_local_sdk: bool = False,
+    run_execute: bool = True,
+    breaking_change_provider_version: str | None = None,
     pandora_repo: Path | None = None,
     go_azure_sdk_repo: Path | None = None,
     pandora_service: str | None = None) -> bool:
-    """Upgrade the RP, then (optionally) run acctest investigation. Returns overall success.
+    """Run the enabled stages in order and return overall success.
 
-    Success is decided by the UPGRADE alone (a green ``go build``). The acctest stage is
-    ADVISORY: it runs the full suite once and writes an investigate-and-report artifact for a
-    human, but never changes the exit code — slow/flaky acceptance tests must not fail a run
-    whose upgrade converged.
+    Prebuild, execute, and breaking-change failures stop the pipeline. The acctest stage remains
+    ADVISORY: it writes an investigate-and-report artifact but never changes the exit code.
 
     All work happens directly in ``repo``; the agent only edits files (the no-VCS guard keeps
     every change unstaged) so a human can review ``git -C <repo> diff`` afterwards.
@@ -56,20 +56,18 @@ def run(repo: Path, rp_name: str, target: str, old: str | None, *,
             raise ValueError("local SDK prebuild requires Pandora repo, SDK repo, and service")
         print(f"[DEBUG] prebuilding local SDK for Pandora service {pandora_service}")
         if not prebuild.run_prebuild(
-                repo=work,
-                run_dir=run_dir,
-                target=target,
-                pandora_repo=pandora_repo,
-                go_azure_sdk_repo=go_azure_sdk_repo,
+                repo=work, run_dir=run_dir, target=target,
+                pandora_repo=pandora_repo, go_azure_sdk_repo=go_azure_sdk_repo,
                 pandora_service=pandora_service):
             return False
 
-    upgraded = asyncio.run(_with_client(work, lambda client: upgrade.run_upgrade(
-        client, run_dir, repo=work, rp_name=rp_name, target=target, old=old,
-        model=model, max_rounds=max_rounds,
-        debug_tools_log=debug_tools_log)))
+    if run_execute and not asyncio.run(_with_client(work, lambda client: upgrade.run_upgrade(
+            client, run_dir, repo=work, rp_name=rp_name, target=target, old=old,
+            model=model, max_rounds=max_rounds,
+            debug_tools_log=debug_tools_log))):
+        return False
 
-    if upgraded and run_acctest:
+    if run_acctest:
         print("[DEBUG] starting acctest investigation (advisory; does not affect the exit code).")
         acctest_dir = work / ".acctest-run" / rp_name
         acctest_dir.mkdir(parents=True, exist_ok=True)
@@ -79,4 +77,11 @@ def run(repo: Path, rp_name: str, target: str, old: str | None, *,
             test_regex=test_regex, parallel=parallel, model=model,
             debug_tools_log=debug_tools_log)))
 
-    return upgraded
+    if breaking_change_provider_version and not breaking_change.run_breaking_change(
+            repo=work, run_dir=run_dir,
+            provider_version=breaking_change_provider_version,
+            service=rp_name,
+            test_regex=test_regex, parallel=parallel):
+        return False
+
+    return True

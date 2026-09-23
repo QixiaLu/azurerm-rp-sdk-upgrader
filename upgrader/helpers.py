@@ -370,11 +370,13 @@ def run_go_build(repo: str | Path, package: str = "./...",
     breakages ``go build`` misses) without linking or running any test binary.
     Diagnostics from both passes are unioned and de-duplicated.
     """
+    print("[DEBUG] running go build")
     proc = _run(["go", "build", package], repo, timeout)
     combined = (proc.stdout or "") + (proc.stderr or "")
     returncode = proc.returncode
 
     if include_tests:
+        print("[DEBUG] running go vet")
         vet_proc = _run(["go", "vet", test_package], repo, timeout)
         combined += "\n" + (vet_proc.stdout or "") + (vet_proc.stderr or "")
         if returncode == 0:

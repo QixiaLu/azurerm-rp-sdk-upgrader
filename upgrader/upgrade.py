@@ -69,7 +69,7 @@ def build_prompt(rp_name: str, target: str, old: str | None, result_path: Path,
 
 
 def _local_sdk_dir(run_dir: Path) -> str:
-    """Where a successful ``--prebuild-local-sdk`` put the generated SDK, else ``""``.
+    """Where a successful ``prebuild`` stage put the generated SDK, else ``""``.
 
     A prebuilt version is deliberately absent upstream, so the agent must skip the
     "is it published?" check that would otherwise abort the run.

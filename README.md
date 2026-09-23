@@ -41,7 +41,7 @@ Upgrade without acceptance tests:
 ```bash
 python -m upgrader keyvault 2023-07-01 \
   --repo ~/repos/terraform-provider-azurerm \
-  --skip-acctest
+  --stage upgrade
 ```
 
 Upgrade and investigate acceptance-test failures:
@@ -55,6 +55,31 @@ python -m upgrader keyvault 2023-07-01 \
 
 The installed `upgrader` command is equivalent to `python -m upgrader`.
 
+### Breaking-change detection
+
+Run breaking-change detection independently against a released AzureRM provider:
+
+```bash
+python -m upgrader keyvault 2023-07-01 \
+  --repo ~/repos/terraform-provider-azurerm \
+  --stage breaking-change \
+  --provider-version 4.77.0 \
+  --test-regex 'TestAccKeyVault_'
+```
+
+To chain detection after the normal upgrade and acceptance-test flow, append the
+detector option to the existing command:
+
+```bash
+python -m upgrader keyvault 2023-07-01 \
+  --repo ~/repos/terraform-provider-azurerm \
+  --stage upgrade \
+  --stage acctest \
+  --stage breaking-change \
+  --provider-version 4.77.0 \
+  --test-regex 'TestAccKeyVault_'
+```
+
 ### Unpublished SDK versions
 
 Generate the target SDK from local repositories when it is not published:
@@ -62,11 +87,11 @@ Generate the target SDK from local repositories when it is not published:
 ```bash
 python -m upgrader network 2025-09-01 \
   --repo ~/repos/terraform-provider-azurerm \
-  --prebuild-local-sdk \
+  --stage prebuild \
+  --stage upgrade \
   --pandora-repo ~/repos/pandora \
   --go-azure-sdk-repo ~/repos/go-azure-sdk \
-  --pandora-service Network \
-  --skip-acctest
+  --pandora-service Network
 ```
 
 `--pandora-service` is the service `name` in Pandora's
@@ -74,18 +99,22 @@ python -m upgrader network 2025-09-01 \
 
 ## Options
 
+By default, the `upgrade` and `acctest` stages run. Supplying any `--stage`
+replaces that default; repeat the option to select multiple stages. Stages always
+run in pipeline order: `prebuild`, `upgrade`, `acctest`, then `breaking-change`.
+
 | Option | Description |
 | --- | --- |
 | `--repo` | Provider checkout to edit (required). |
+| `--stage` | Stage to run; repeat for multiple stages. |
 | `--old-api-version` | Existing API version; detected when omitted. |
-| `--skip-acctest` | Skip acceptance-test investigation. |
 | `--test-regex` | Acceptance-test `-run` filter (default: `TestAcc`). |
 | `--parallel` | Maximum parallel acceptance tests (default: 11). |
+| `--provider-version` | Released AzureRM version used by the `breaking-change` stage. |
 | `--max-rounds` | Maximum upgrade rounds (default: 8). |
 | `--model` | Copilot model to use. |
 | `--env-file` | Alternative credentials file. |
 | `--debug` | Print agent tool-usage records. |
-| `--prebuild-local-sdk` | Generate and link a local SDK. |
 | `--pandora-repo` | Pandora checkout used for generation. |
 | `--go-azure-sdk-repo` | `go-azure-sdk` checkout used for generation. |
 | `--pandora-service` | Pandora service name used for generation. |
@@ -107,7 +136,9 @@ The main files are:
 - `result.json`: build result, API changes, breaking-change assessment, and
   acceptance-test findings when tests were run.
 - `prebuild.json` and `prebuild.log`: local SDK generation status and logs, only
-  when `--prebuild-local-sdk` was used.
+  when `--stage prebuild` was used.
+- `breaking-change.json` and `breaking-change.log`: breaking-change test status and
+  output, only when `--stage breaking-change` was used.
 
 Review changes with:
 
@@ -119,7 +150,7 @@ git -C <provider-repo> diff
 
 ```pwsh
 $env:AZURERM_REPO = "C:\Repos\terraform-provider-azurerm"
-docker compose run --rm upgrader keyvault 2023-07-01 --repo /workspace/azurerm --skip-acctest
+docker compose run --rm upgrader keyvault 2023-07-01 --repo /workspace/azurerm --stage upgrade
 ```
 
 Compose loads `.env`. Rebuild the image after source changes with

@@ -22,5 +22,5 @@ upgrader = "upgrader.cli:main"
 include = ["upgrader*"]
 
 [tool.setuptools.package-data]
-upgrader = ["prompts/*.md", "*.md"]
+upgrader = ["prompts/*.md", "*.md", "*.sh"]
 "upgrader.agents" = ["*.md"]
