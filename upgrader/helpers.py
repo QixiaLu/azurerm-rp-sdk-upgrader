@@ -49,12 +49,13 @@ __all__ = [
     "classify_schema_impact",
     "tag_api_changes_schema_impact",
     "schema_impacting_changes",
+    "finalize_result",
     # teamcity baseline
     "service_build_type_id",
     "capture_teamcity_baseline",
     # acctest launch
     "missing_acctest_env",
-    "make_testargs",
+    "go_test_argv",
     "launch_acctests",
 ]
 
@@ -613,6 +614,113 @@ def schema_impacting_changes(api_changes: Any) -> list[dict[str, Any]]:
             if isinstance(c, dict) and c.get("schema_impact") == _SCHEMA_IMPACT_SCHEMA]
 
 
+_PROVIDER_SURFACE_STATUSES = frozenset({"exposed", "not_exposed", "unknown"})
+
+
+def _provider_surface(change: dict[str, Any]) -> dict[str, Any]:
+    """Normalize an API change's provider-surface assessment."""
+    raw = change.get("provider_surface")
+    surface = dict(raw) if isinstance(raw, dict) else {}
+    status = str(surface.get("status") or "unknown").lower()
+    surface["status"] = status if status in _PROVIDER_SURFACE_STATUSES else "unknown"
+    surface["locations"] = surface.get("locations") if isinstance(
+        surface.get("locations"), list) else []
+    surface["rationale"] = str(surface.get("rationale") or "")
+    surface["recommended_action"] = str(surface.get("recommended_action") or "")
+    return surface
+
+
+def _finding(category: str, item: Any, *, owner: str, blocking: bool,
+             suggested_action: str = "") -> dict[str, Any]:
+    row = dict(item) if isinstance(item, dict) else {"detail": str(item)}
+    return {
+        "category": category,
+        "title": str(row.get("test") or row.get("summary") or row.get("cause") or category),
+        "detail": str(row.get("error") or row.get("cause") or row.get("note") or ""),
+        "owner": owner,
+        "blocking": blocking,
+        "suggested_action": str(row.get("recommended_fix") or row.get("suggested_change")
+                                or suggested_action),
+    }
+
+
+def finalize_result(result: dict[str, Any], *, provenance: dict[str, Any]) -> dict[str, Any]:
+    """Return the stable, orchestrator-owned public result contract for one run."""
+    final = dict(result)
+    final["schema_version"] = 2
+    final["provenance"] = provenance
+
+    changes: list[Any] = []
+    for item in tag_api_changes_schema_impact(final.get("api_changes")):
+        if not isinstance(item, dict):
+            changes.append(item)
+            continue
+        change = dict(item)
+        change["sdk_model_impact"] = (
+            "plumbing_only" if change["schema_impact"] == _SCHEMA_IMPACT_SDK
+            else "model_change")
+        change["provider_surface"] = _provider_surface(change)
+        changes.append(change)
+    final["api_changes"] = changes
+    exposed = [c for c in changes if isinstance(c, dict)
+               and c["provider_surface"]["status"] == "exposed"]
+    unknown = [c for c in changes if isinstance(c, dict)
+               and c["provider_surface"]["status"] == "unknown"]
+    final["provider_schema_impacting_change_count"] = len(exposed)
+    final["provider_surface_review_count"] = len(unknown)
+
+    findings: list[dict[str, Any]] = []
+    for blocker in final.get("blockers") or []:
+        findings.append(_finding("upgrade_blocker", blocker, owner="provider-maintainers",
+                                 blocking=True))
+    acctest = final.get("acctest") if isinstance(final.get("acctest"), dict) else {}
+    categories = (
+        ("breaking_changes", "breaking_change", "provider-maintainers", True),
+        ("api_bugs", "api_bug", "azure-service-team", True),
+        ("test_side", "test_debt", "provider-maintainers", False),
+        ("flakes", "environment", "test-infrastructure", False),
+        ("needs_human", "needs_human", "provider-maintainers", True),
+        ("leaked_resource_risks", "cleanup_risk", "test-infrastructure", False),
+    )
+    for source, category, owner, blocking in categories:
+        findings.extend(_finding(category, item, owner=owner, blocking=blocking)
+                        for item in acctest.get(source) or [])
+    final["findings"] = findings
+
+    actions = [{
+        "action": finding["suggested_action"] or f"Investigate {finding['category']}.",
+        "owner": finding["owner"],
+        "blocking": finding["blocking"],
+    } for finding in findings]
+    actions.extend({
+        "action": change["provider_surface"]["recommended_action"] or
+                  "Decide whether to expose this SDK model change in the provider.",
+        "owner": "provider-maintainers",
+        "blocking": False,
+    } for change in unknown)
+    final["actions"] = actions
+
+    checks = final.get("compatibility_checks")
+    final["compatibility_checks"] = checks if isinstance(checks, list) else []
+    final["compatibility_checks"].append({
+        "area": "provider_build",
+        "status": "passed" if final.get("build_passed") else "failed",
+        "evidence": "orchestrator go build ./...",
+    })
+    final["cleanup"] = acctest.get("cleanup") if isinstance(acctest.get("cleanup"), list) else []
+
+    blocking = any(finding["blocking"] for finding in findings)
+    verdict = "blocked" if not final.get("build_passed") or blocking else (
+        "needs_review" if unknown or findings else "ready")
+    final["merge_readiness"] = {
+        "verdict": verdict,
+        "reason": "Build failed or blocking findings exist." if verdict == "blocked" else
+                  "Provider-surface review or non-blocking findings remain." if verdict == "needs_review" else
+                  "Build and recorded compatibility checks passed.",
+    }
+    return final
+
+
 def collect_azure_rest_api_specs_context(rp_name: str, target_api_version: str,
                                          old_api_version: str | None = None, *,
                                          repo: str = _GITHUB_SPEC_REPO,
@@ -902,9 +1010,7 @@ def capture_teamcity_baseline(rp_name: str, output: str | Path, *,
 # acctest launch (deterministic, orchestrator-side)
 # --------------------------------------------------------------------------- #
 #
-# Check the ARM env, build the `-run`/TESTARGS string with the exact make/sh
-# quoting, and start `make acctests` detached. The fragile `$$`/quote rules are
-# exactly what an LLM gets wrong and Python gets right, so this stays in Python.
+# Check the ARM env, build the direct `go test` argv, and start it detached.
 
 # ARM credentials/locations the suite needs before it creates real resources.
 ACCTEST_REQUIRED_ENV = (
@@ -924,27 +1030,23 @@ def missing_acctest_env(env: dict[str, str] | None = None) -> list[str]:
     return [k for k in ACCTEST_REQUIRED_ENV if not credentials.get(k)]
 
 
-def make_testargs(test_regex: str, parallel: int) -> str:
-    """Build the ``TESTARGS`` value for ``make acctests``, escaped to survive two hops.
-
-    ``make`` expands ``$(TESTARGS)`` into a ``/bin/sh`` (dash) recipe command, so the
-    value must carry its own quoting:
-
-    * every literal ``$`` in the RE2 regex is doubled (``$$``) so ``make``'s own
-      variable expansion emits a single ``$`` (an un-doubled ``$`` is eaten), and
-    * the regex is wrapped in DOUBLE quotes so dash treats ``(`` and ``|`` as literals.
-
-    We pass this as one argv element to ``make`` (no host shell), so no further
-    shell-level quoting is needed here.
-    """
-    safe = test_regex.replace("$", "$$")
-    return f'-run="{safe}" -parallel {int(parallel)} -json'
+def go_test_argv(rp_name: str, test_regex: str, parallel: int,
+                 timeout_min: int) -> list[str]:
+    """Build the direct acceptance-test command without shell quoting."""
+    return [
+        "go", "test",
+        f"./internal/services/{rp_name}",
+        f"-run={test_regex}",
+        "-parallel", str(int(parallel)),
+        "-timeout", f"{int(timeout_min)}m",
+        "-json",
+    ]
 
 
 def launch_acctests(repo: str | Path, acctest_dir: str | Path, *, rp_name: str,
                     test_regex: str = "TestAcc", parallel: int = 11,
                     timeout_min: int = 0) -> dict[str, Any]:
-    """Start ``make acctests`` DETACHED in ``repo``; write artifacts under ``acctest_dir``.
+    """Start ``TF_ACC=1 go test`` DETACHED in ``repo``; write acctest artifacts.
 
     Returns ``{"status", "pid", "reason", "run_filter", "run_json", "pid_file"}`` where
     ``status`` is ``"launched"`` (a live PID was recorded) or ``"failed"`` (with a reason).
@@ -958,13 +1060,12 @@ def launch_acctests(repo: str | Path, acctest_dir: str | Path, *, rp_name: str,
     run_err = acctest_dir / "run.err"
     pid_file = acctest_dir / "run.pid"
     meta_file = acctest_dir / "meta.json"
-    testargs = make_testargs(test_regex, parallel)
-    argv = ["make", "acctests", f"SERVICE={rp_name}",
-            f"TESTARGS={testargs}", f"TESTTIMEOUT={int(timeout_min)}m"]
+    argv = go_test_argv(rp_name, test_regex, parallel, timeout_min)
 
     def _failed(reason: str) -> dict[str, Any]:
         return {"status": "failed", "pid": None, "reason": reason,
-                "run_filter": testargs, "run_json": str(run_json), "pid_file": str(pid_file)}
+                "run_filter": test_regex, "run_json": str(run_json),
+                "pid_file": str(pid_file)}
 
     try:
         out = run_json.open("w", encoding="utf-8")
@@ -972,10 +1073,12 @@ def launch_acctests(repo: str | Path, acctest_dir: str | Path, *, rp_name: str,
     except OSError as exc:
         return _failed(f"cannot open output files: {exc}")
 
+    child_env = credentials.subprocess_env(*ACCTEST_REQUIRED_ENV)
+    child_env["TF_ACC"] = "1"
     popen_kwargs: dict[str, Any] = {
         "cwd": str(repo), "stdout": out, "stderr": err, "stdin": subprocess.DEVNULL,
         # the only process that gets the service principal
-        "env": credentials.subprocess_env(*ACCTEST_REQUIRED_ENV),
+        "env": child_env,
     }
     if os.name == "posix":  # detach into its own session so it survives orchestrator exit
         popen_kwargs["start_new_session"] = True
@@ -984,18 +1087,19 @@ def launch_acctests(repo: str | Path, acctest_dir: str | Path, *, rp_name: str,
     except (OSError, ValueError) as exc:
         out.close()
         err.close()
-        return _failed(f"failed to start make acctests: {exc}")
+        return _failed(f"failed to start go test: {exc}")
     finally:
         out.close()  # child inherited the fds; drop the parent's copies
         err.close()
 
     pid_file.write_text(f"{proc.pid}\n", encoding="utf-8")
     meta_file.write_text(json.dumps({
-        "service": rp_name, "run_filter": testargs, "parallel": int(parallel),
+        "service": rp_name, "run_filter": test_regex, "parallel": int(parallel),
+        "command": argv,
         "started": time.time(),
     }, indent=2) + "\n", encoding="utf-8")
     return {"status": "launched", "pid": proc.pid, "reason": "",
-            "run_filter": testargs, "run_json": str(run_json), "pid_file": str(pid_file)}
+            "run_filter": test_regex, "run_json": str(run_json), "pid_file": str(pid_file)}
 
 
 # --------------------------------------------------------------------------- #
@@ -1140,11 +1244,11 @@ def _main(argv: list[str] | None = None) -> int:
                    help="Full TeamCity build-config id (overrides the --service-derived default).")
     b.add_argument("--teamcity-env", default="PUBLIC")
 
-    l = sub.add_parser("launch", help="Start `make acctests` detached; record run.pid.")
+    l = sub.add_parser("launch", help="Start `TF_ACC=1 go test` detached; record run.pid.")
     l.add_argument("--repo", required=True, help="terraform-provider-azurerm checkout path.")
     l.add_argument("--acctest-dir", required=True, help="Where run.json/run.pid/meta.json go.")
     l.add_argument("--service", required=True,
-                   help="Provider service dir for `make acctests SERVICE=<dir>` (NOT the product "
+                   help="Provider service directory under internal/services/ (NOT the product "
                         "RP name if they differ).")
     l.add_argument("--test-regex", default="TestAcc")
     l.add_argument("--parallel", type=int, default=11)

@@ -193,7 +193,7 @@ def _pid_alive(pid: int) -> bool:
 
 
 def _finished(acctest_dir: Path) -> bool:
-    """One non-blocking poll: has the detached `make acctests` run ended?"""
+    """One non-blocking poll: has the detached acceptance-test run ended?"""
     pid = _read_pid(acctest_dir / "run.pid")
     if pid is None:
         # No PID yet means the orchestrator hasn't recorded one; treat as not finished
@@ -242,7 +242,7 @@ async def run_acctest(client, run_dir: Path, acctest_dir: Path, *, repo: Path, r
 
     # LAUNCH is an agent turn: it maps the product RP name to the real provider SERVICE dir +
     # test regex (which a deterministic mapping gets wrong), captures the baseline, and starts
-    # `make acctests` detached — all via the `python -m upgrader.helpers` CLI, which owns the
+    # `TF_ACC=1 go test` detached — all via the helper CLI, which owns the
     # mechanical TeamCity/quoting/spawn work. The agent never waits.
     acctest_dir.mkdir(parents=True, exist_ok=True)
     print("=== acctest: launching the FULL suite (detached, launch agent) ===")
@@ -301,7 +301,6 @@ async def run_acctest(client, run_dir: Path, acctest_dir: Path, *, repo: Path, r
     status = report.get("status", "unknown")
     clean = status != "failed" and new_failed == 0 and not breaking and not api_bugs
 
-    _cleanup_intermediate(acctest_dir)
     launch_result.unlink(missing_ok=True)  # launch details already served their purpose
     if merged:  # findings now live in result.json; drop the standalone sidecar
         collect_result.unlink(missing_ok=True)

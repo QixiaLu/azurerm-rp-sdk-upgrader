@@ -15,7 +15,7 @@ branches, or opens pull requests.
 
 - Python 3.9+, Git, and the Go toolchain required by the provider checkout.
 - `GH_TOKEN` with GitHub Copilot access.
-- For acceptance tests: `make`, Terraform, Azure
+- For acceptance tests: Terraform, Azure
   credentials, and `TEAMCITY_TOKEN` (or `TEAMCITY_ACCESSTOKEN`).
 - For local SDK generation: `goimports`, Pandora, and `go-azure-sdk` checkouts.
 
@@ -124,13 +124,15 @@ Run `upgrader --help` for the authoritative CLI reference.
 ## Output
 
 The provider checkout contains the upgraded Go files and any generated dependency
-changes. Run artifacts are written to:
+changes. Each invocation gets a unique, retained run directory:
 
 ```text
-<provider-repo>/.upgrader/<rp>/<target-version>/
+<provider-repo>/.upgrader/<rp>/<target-version>/runs/<run-id>/
 ```
 
-The main files are:
+`latest.json` at `<provider-repo>/.upgrader/<rp>/<target-version>/` points to
+the newest run. Every run has an orchestrator-owned `run.json` with the inputs,
+stage statuses, timestamps, and paths to its stage artifacts. The main files are:
 
 - `IMPLEMENTATION_PLAN.md`: completed work and remaining follow-ups.
 - `result.json`: build result, API changes, breaking-change assessment, and
@@ -139,6 +141,17 @@ The main files are:
   when `--stage prebuild` was used.
 - `breaking-change.json` and `breaking-change.log`: breaking-change test status and
   output, only when `--stage breaking-change` was used.
+- `acctest/`: retained raw acceptance-test output, baseline, reduced analysis, and
+  per-test failure logs when `--stage acctest` was used.
+
+`result.json` is a versioned, machine-readable review report. `provenance`
+records source/target API versions, commit, stages, and test scope;
+`api_changes` distinguishes SDK model impact from the confirmed
+`provider_surface`; `compatibility_checks` records supporting evidence.
+`findings` and `actions` provide category, owner, blocking state, and next step.
+Use `merge_readiness.verdict` (`ready`, `needs_review`, or `blocked`) as the
+automation-friendly overall decision. Acceptance-test cleanup evidence and any
+resource locators are recorded under `cleanup`.
 
 Review changes with:
 

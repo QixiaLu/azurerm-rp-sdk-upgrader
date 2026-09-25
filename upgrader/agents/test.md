@@ -149,4 +149,7 @@ recommended_fix (str; a direction for a human, NOT implemented)}),
 `"test_side"` (list of {test, cause, suggested_change}),
 `"api_bugs"` (list of {test, error, contradicts_spec}),
 `"flakes"` (list), `"needs_human"` (list), `"leaked_resource_risks"` (list),
-`"new_failures"` (list of test names).
+`"new_failures"` (list of test names), and `"cleanup"` (list of
+`{test, status: "clean"|"risk"|"unknown", resource_identifiers, evidence,
+recommended_action}`). Record resource group names, resource IDs, or other
+locators when logs expose them; never invent identifiers.

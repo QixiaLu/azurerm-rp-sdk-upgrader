@@ -102,9 +102,6 @@ did, do one bounded chunk, update the plan, write `result.json`, and exit. Do
      record the conclusion, supporting evidence, and user impact in the
      corresponding `api_changes` entry rather than assuming a successful build
      means the change is compatible;
-   - mitigate per the repo's `contributing/topics/guide-breaking-changes.md`; for
-     unavoidable changes apply transitional patterns (deprecation messaging,
-     `features.FivePointOh()` gating, conditional registration, staged tests);
    - add docs follow-up (upgrade guide + resource/data-source docs) when behavior
      is user-visible.
 7. **Do NOT run `go build` yourself.** The orchestrator runs the authoritative
@@ -178,9 +175,22 @@ message with:
     provider never calls, and operations/models removed that the provider never
     used.
 
+  Also write `provider_surface` for every entry as
+  `{"status": "exposed"|"not_exposed"|"unknown", "locations": [], "rationale": str,
+  "recommended_action": str}`. This is separate from SDK model impact: an
+  additive SDK property is `not_exposed` when no provider
+  expand/flatten/schema path uses it. List exact provider files or attributes in
+  `locations` when it is exposed. Use `unknown` only when evidence is incomplete.
+
   Tag every entry. When genuinely unsure, tag `"schema"` — a needless review
   costs a glance, a missed one ships a breaking change. The orchestrator
   re-derives the tag when it is missing or invalid.
+
+Also write `compatibility_checks`: a list of
+`{"area", "status": "passed"|"failed"|"not_applicable"|"inconclusive", "evidence"}`.
+Cover SDK model compatibility, Provider schema compatibility, and target API
+contract compatibility. An empty `breaking_changes` list is not evidence by
+itself: record the checks that support that conclusion.
 
 Set `status="done"` only when you believe the RP is fully migrated and expect a
 clean build; the orchestrator's `go build ./...` confirms it and sets

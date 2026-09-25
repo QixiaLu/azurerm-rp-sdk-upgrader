@@ -64,8 +64,16 @@ class TestBreakingChangeStage(unittest.TestCase):
                 run_execute=False, run_acctest=False,
                 breaking_change_provider_version="4.77.0",
             )
+            root = Path(temp)
+            self.assertTrue(succeeded)
+            latest = helpers.read_result(
+                root / ".upgrader" / "keyvault" / "2023-07-01" / "latest.json")
+            manifest = helpers.read_result(Path(latest["run"]) / "run.json")
+            self.assertEqual(manifest["schema_version"], 1)
+            self.assertEqual(manifest["status"], "success")
+            self.assertEqual(manifest["input"]["stages"], ["breaking-change"])
+            self.assertEqual(manifest["stages"]["breaking-change"]["status"], "success")
 
-        self.assertTrue(succeeded)
         with_client.assert_not_called()
         run_breaking_change.assert_called_once()
 

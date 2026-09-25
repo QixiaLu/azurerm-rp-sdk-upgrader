@@ -16,6 +16,8 @@ import os
 import tempfile
 import unittest
 from argparse import Namespace
+from pathlib import Path
+from unittest.mock import Mock, patch
 
 from upgrader import helpers, upgrade
 
@@ -154,6 +156,38 @@ class TestResultSidecar(unittest.TestCase):
     def test_read_missing_is_empty(self):
         self.assertEqual(helpers.read_result("/no/such/file.json"), {})
 
+    def test_finalize_result_separates_sdk_and_provider_impact(self):
+        result = helpers.finalize_result({
+            "build_passed": True,
+            "api_changes": [{
+                "kind": "added",
+                "symbol": "IndexingPolicy.vectorIndexes",
+                "detail": "New optional property.",
+                "provider_surface": {
+                    "status": "not_exposed",
+                    "rationale": "No provider expand or flatten path uses it.",
+                },
+            }],
+            "acctest": {
+                "test_side": [{
+                    "test": "TestAccExample",
+                    "cause": "Unsupported fixture value.",
+                    "suggested_change": "Use a supported value.",
+                }],
+                "cleanup": [{"test": "TestAccExample", "status": "clean"}],
+            },
+        }, provenance={"source_api_version": "2024-01-01"})
+
+        change = result["api_changes"][0]
+        self.assertEqual(change["sdk_model_impact"], "model_change")
+        self.assertEqual(change["provider_surface"]["status"], "not_exposed")
+        self.assertEqual(result["provider_schema_impacting_change_count"], 0)
+        self.assertEqual(result["provider_surface_review_count"], 0)
+        self.assertEqual(result["findings"][0]["category"], "test_debt")
+        self.assertEqual(result["findings"][0]["owner"], "provider-maintainers")
+        self.assertEqual(result["merge_readiness"]["verdict"], "needs_review")
+        self.assertEqual(result["cleanup"][0]["status"], "clean")
+
 
 class TestUpgradeProgress(unittest.TestCase):
     def test_format_no_errors(self):
@@ -230,18 +264,48 @@ class TeamCityBaselineTests(unittest.TestCase):
 
 
 class AcctestLaunchTests(unittest.TestCase):
-    def test_make_testargs_default_regex(self):
-        self.assertEqual(helpers.make_testargs("TestAcc", 11),
-                         '-run="TestAcc" -parallel 11 -json')
+    def test_go_test_argv(self):
+        self.assertEqual(
+            helpers.go_test_argv("keyvault", "TestAccFoo(Bar|Baz)$", 5, 0),
+            [
+                "go", "test", "./internal/services/keyvault",
+                "-run=TestAccFoo(Bar|Baz)$",
+                "-parallel", "5",
+                "-timeout", "0m",
+                "-json",
+            ],
+        )
 
-    def test_make_testargs_doubles_dollar_and_keeps_metachars(self):
-        # `$` must be doubled for make; `(`/`|` stay literal inside the double quotes.
-        self.assertEqual(helpers.make_testargs("TestAccFoo(Bar|Baz)$", 5),
-                         '-run="TestAccFoo(Bar|Baz)$$" -parallel 5 -json')
+    def test_launch_uses_direct_go_test_with_tf_acc(self):
+        process = Mock(pid=1234)
+        with tempfile.TemporaryDirectory() as directory, \
+                patch("upgrader.helpers.subprocess.Popen", return_value=process) as popen:
+            repo = Path(directory) / "repo"
+            repo.mkdir()
+            acctest_dir = Path(directory) / "acctest"
 
-    def test_make_testargs_multiple_dollars(self):
-        self.assertEqual(helpers.make_testargs("A$|B$", 1),
-                         '-run="A$$|B$$" -parallel 1 -json')
+            result = helpers.launch_acctests(
+                repo,
+                acctest_dir,
+                rp_name="keyvault",
+                test_regex="TestAccKeyVault$",
+                parallel=7,
+                timeout_min=30,
+            )
+
+        self.assertEqual(result["status"], "launched")
+        argv = popen.call_args.args[0]
+        self.assertEqual(
+            argv,
+            [
+                "go", "test", "./internal/services/keyvault",
+                "-run=TestAccKeyVault$",
+                "-parallel", "7",
+                "-timeout", "30m",
+                "-json",
+            ],
+        )
+        self.assertEqual(popen.call_args.kwargs["env"]["TF_ACC"], "1")
 
     def test_missing_acctest_env_lists_absent_vars(self):
         self.assertEqual(helpers.missing_acctest_env({}), list(helpers.ACCTEST_REQUIRED_ENV))

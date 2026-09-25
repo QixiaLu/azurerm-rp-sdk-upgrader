@@ -110,8 +110,8 @@ def main(argv: list[str] | None = None) -> int:
              go_azure_sdk_repo=(args.go_azure_sdk_repo.resolve()
                                 if args.go_azure_sdk_repo else None),
              pandora_service=args.pandora_service)
-    print("[DEBUG] " + (f"requested pipeline complete; review `git -C {args.repo} diff`."
-                        if ok else "a pipeline stage failed; review the run artifacts"))
+    print(f"requested pipeline {'complete' if ok else 'failed'}; "
+          f"review `git -C {args.repo} diff` and the run artifacts above.")
     return 0 if ok else 1
 
 
