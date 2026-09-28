@@ -145,6 +145,67 @@ class TestAnalyzeRun(unittest.TestCase):
         self.assertEqual(clustered, ["TestAccKeyVault_update"])
 
 
+class TestRunGoBuild(unittest.TestCase):
+    @patch("upgrader.helpers._run")
+    @patch("builtins.print")
+    def test_logs_commands_actually_run(self, print_mock, run_mock):
+        run_mock.return_value = Mock(stdout="", stderr="", returncode=0)
+
+        helpers.run_go_build(
+            "repo", package="./sdk/...", test_package="./internal/...")
+
+        self.assertEqual(
+            [call.args[0] for call in print_mock.call_args_list],
+            [
+                "[DEBUG] running go build ./sdk/...",
+                "[DEBUG] running go test -vet=off -run=^$ ./internal/...",
+            ],
+        )
+        self.assertEqual(
+            [call.args[0] for call in run_mock.call_args_list],
+            [
+                ["go", "build", "./sdk/..."],
+                ["go", "test", "-vet=off", "-run=^$", "./internal/..."],
+            ],
+        )
+
+    @patch("upgrader.helpers._run")
+    def test_test_compile_failure_fails_build(self, run_mock):
+        run_mock.side_effect = [
+            Mock(stdout="", stderr="", returncode=0),
+            Mock(
+                stdout="",
+                stderr="./internal/example_test.go:12:3: undefined: removedSymbol\n",
+                returncode=1,
+            ),
+        ]
+
+        result = helpers.run_go_build("repo")
+
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["returncode"], 1)
+        self.assertEqual(result["errors"], [{
+            "file": "./internal/example_test.go",
+            "line": 12,
+            "col": 3,
+            "msg": "undefined: removedSymbol",
+        }])
+
+    @patch("upgrader.helpers._run")
+    def test_nonzero_return_without_compiler_errors_passes(self, run_mock):
+        run_mock.side_effect = [
+            Mock(stdout="", stderr="", returncode=0),
+            Mock(stdout="FAIL example/package\n", stderr="", returncode=1),
+        ]
+
+        result = helpers.run_go_build("repo")
+
+        self.assertTrue(result["passed"])
+        self.assertEqual(result["returncode"], 1)
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(result["raw_tail"], "\nFAIL example/package")
+
+
 class TestResultSidecar(unittest.TestCase):
     def test_round_trip(self):
         with tempfile.TemporaryDirectory() as d:

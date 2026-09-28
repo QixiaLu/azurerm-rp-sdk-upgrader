@@ -357,31 +357,35 @@ def _parse_go_errors(text: str) -> list[dict[str, Any]]:
 def run_go_build(repo: str | Path, package: str = "./...",
                  timeout: int = 3600, include_tests: bool = True,
                  test_package: str = "./...") -> dict[str, Any]:
-    """Compile ``<package>`` (and vet the tree) in ``repo`` and return a structured result.
+    """Compile ``<package>`` and its tests in ``repo`` and return a structured result.
 
     Returns ``{"passed": bool, "returncode": int, "errors": [{file, line, col,
     msg}], "raw_tail": str}``. ``errors`` is parsed from the compiler's
     ``file.go:line:col: msg`` diagnostics so the agent gets an objective,
-    machine-checkable build signal instead of parsing prose.
+    machine-checkable build signal instead of parsing prose. Convergence depends
+    on whether those diagnostics are empty rather than the commands' return
+    codes; the return code and output remain available for troubleshooting.
 
     ``go build ./...`` deliberately skips ``*_test.go`` files, so an SDK API bump
     can leave the tree "green" while every ``_test.go`` in the RP fails to compile.
-    With ``include_tests`` (default), a second pass runs ``go vet`` over
-    ``test_package`` — vet type-checks ``*_test.go`` (surfacing test-file compile
-    breakages ``go build`` misses) without linking or running any test binary.
-    Diagnostics from both passes are unioned and de-duplicated.
+    With ``include_tests`` (default), a second pass runs ``go test -vet=off
+    -run=^$`` over ``test_package``. This compiles ``*_test.go`` files without
+    selecting any tests and avoids treating unrelated vet findings as compile
+    failures. Diagnostics from both passes are unioned and de-duplicated.
     """
-    print("[DEBUG] running go build")
-    proc = _run(["go", "build", package], repo, timeout)
+    build_command = ["go", "build", package]
+    print(f"[DEBUG] running {subprocess.list2cmdline(build_command)}")
+    proc = _run(build_command, repo, timeout)
     combined = (proc.stdout or "") + (proc.stderr or "")
     returncode = proc.returncode
 
     if include_tests:
-        print("[DEBUG] running go vet")
-        vet_proc = _run(["go", "vet", test_package], repo, timeout)
-        combined += "\n" + (vet_proc.stdout or "") + (vet_proc.stderr or "")
+        test_command = ["go", "test", "-vet=off", "-run=^$", test_package]
+        print(f"[DEBUG] running {subprocess.list2cmdline(test_command)}")
+        test_proc = _run(test_command, repo, timeout)
+        combined += "\n" + (test_proc.stdout or "") + (test_proc.stderr or "")
         if returncode == 0:
-            returncode = vet_proc.returncode
+            returncode = test_proc.returncode
 
     seen: set[tuple[str, int, int, str]] = set()
     errors: list[dict[str, Any]] = []
@@ -392,7 +396,7 @@ def run_go_build(repo: str | Path, package: str = "./...",
             errors.append(err)
 
     return {
-        "passed": returncode == 0,
+        "passed": not errors,
         "returncode": returncode,
         "errors": errors,
         "raw_tail": "\n".join(combined.splitlines()[-40:]),

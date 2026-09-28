@@ -18,10 +18,10 @@
 ## How this run is driven (read this first)
 
 You run as **one round of a bounded loop**. After your turn the **orchestrator**
-compiles the tree itself — `go build ./...` *and* `go vet ./...` (which
-type-checks every `*_test.go` without running any test) — that deterministic
-result, not your self-report, decides whether another round is needed. The
-per-turn task message gives you:
+compiles the tree itself — `go build ./...` *and*
+`go test -vet=off -run=^$ ./...` (which compiles every `*_test.go` without
+selecting any tests) — that deterministic result, not your self-report, decides
+whether another round is needed. The per-turn task message gives you:
 
 - the **authoritative remaining compile errors** from the orchestrator's last
   compile (empty on the first round / when already clean) — treat these as
@@ -105,12 +105,13 @@ did, do one bounded chunk, update the plan, write `result.json`, and exit. Do
    - add docs follow-up (upgrade guide + resource/data-source docs) when behavior
      is user-visible.
 7. **Do NOT run `go build` yourself.** The orchestrator runs the authoritative
-   compile after your turn — `go build ./...` **plus** `go vet ./...` so
-   `*_test.go` breakages count too — and feeds any remaining compile errors into
-   the next round's task message: that is your build signal. Running builds in
-   this session only burns context with raw compiler output; make your edits and
-   rely on the orchestrator's verdict. (`go mod tidy`/`go mod vendor` in step 4
-   are still yours — they produce `vendor/`, they are not a build.)
+   compile after your turn — `go build ./...` **plus**
+   `go test -vet=off -run=^$ ./...` so `*_test.go` breakages count too — and
+   feeds any remaining compile errors into the next round's task message: that
+   is your build signal. Running builds in this session only burns context with
+   raw compiler output; make your edits and rely on the orchestrator's verdict.
+   (`go mod tidy`/`go mod vendor` in step 4 are still yours — they produce
+   `vendor/`, they are not a build.)
 8. **Update the plan file (at the `plan_path` from the task message) NOW:** tick
    finished tasks, append findings/blockers. Then write `result.json` and EXIT.
 
@@ -138,8 +139,8 @@ record) breaking changes; drive to a green `go build ./...`.
 **I don't:** `git commit`/`push`/`checkout`/branch (all edits stay **unstaged**
 for human review); `git diff`/`git status`/`cat` on `vendor/` or `go.sum` (treat
 them as generated — the orchestrator's build is the only verification); run
-`go build`/`go vet` myself (the orchestrator owns the build); refactor beyond what compile errors force; claim done without the
-orchestrator's build agreeing.
+`go build`/`go test` myself (the orchestrator owns the build); refactor beyond
+what compile errors force; claim done without the orchestrator's build agreeing.
 
 ## result.json contract
 
