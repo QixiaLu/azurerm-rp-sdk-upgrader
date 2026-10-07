@@ -24,8 +24,7 @@ def positive_int(value: str) -> int:
 def load_env(explicit: Path | None = None) -> None:
     """Load ``explicit`` if given, else the ``.env`` in the cwd and in this checkout's root.
 
-    Direct runs have no ``docker compose`` to inject ``.env``. Secrets are held in-process
-    rather than exported — see :mod:`upgrader.credentials`.
+    Secrets are held in-process rather than exported — see :mod:`upgrader.credentials`.
     """
     credentials.load(explicit)
 
@@ -33,7 +32,7 @@ def load_env(explicit: Path | None = None) -> None:
 def build_parser() -> argparse.ArgumentParser:
     """Build the public command-line interface."""
     parser = argparse.ArgumentParser(
-        prog="upgrader",
+        prog="apiupgrader",
         description="Upgrade an AzureRM provider service to a target API version.",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")

@@ -69,8 +69,8 @@ def _candidates(explicit: Path | None) -> list[Path]:
 def _harvest_environment() -> None:
     """Move secrets the process already inherited into the store.
 
-    ``docker compose``'s ``env_file`` and a shell ``export`` both put them in ``os.environ``
-    before Python starts, so the store has to claim them rather than merely avoid adding them.
+    Shell environment variables are already in ``os.environ`` before Python starts, so the
+    store has to claim them rather than merely avoid adding them.
     """
     for key in SECRET_KEYS:
         value = os.environ.pop(key, None)

@@ -114,7 +114,12 @@ def run(repo: Path, rp_name: str, target: str, old: str | None, *,
                     "provider_version": breaking_change_provider_version,
                 },
             }
-            helpers.write_result(result_path, helpers.finalize_result(result, provenance=provenance))
+            helpers.write_result(
+                result_path,
+                helpers.finalize_result(result, provenance=provenance),
+                summary_first=True,
+                indent=1,
+            )
         manifest["status"] = status
         manifest["finished_at"] = datetime.now(timezone.utc).isoformat()
         _write_manifest(run_dir, manifest)

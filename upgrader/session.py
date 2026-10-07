@@ -27,7 +27,7 @@ _DENIED_GIT = (
 _LOGGED_EVENT_TYPES = frozenset({"assistant.message", "assistant.reasoning"})
 _DEBUG_REDACT_KEYS = ("token", "secret", "password", "authorization", "api_key", "apikey", "key")
 _DEBUG_MAX_STRING = 400
-_STDOUT_PREFIX = "[upgrader]"
+_STDOUT_PREFIX = "[apiupgrader]"
 
 
 # Read-only MCP servers the research-capable agents (upgrade, acctest collect) may call when

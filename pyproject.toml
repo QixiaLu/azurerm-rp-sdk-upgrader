@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "upgrader"
+name = "apiupgrader"
 version = "0.1.0"
 description = "CLI that upgrades one Azure RP API version in terraform-provider-azurerm (upgrade -> acctest triage) via GitHub Copilot agents."
 readme = "README.md"
@@ -16,11 +16,11 @@ dependencies = [
 ]
 
 [project.scripts]
-upgrader = "upgrader.cli:main"
+apiupgrader = "upgrader.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["upgrader*"]
 
 [tool.setuptools.package-data]
-upgrader = ["prompts/*.md", "*.md", "*.sh"]
+upgrader = ["prompts/*.md", "*.md", "*.patch"]
 "upgrader.agents" = ["*.md"]

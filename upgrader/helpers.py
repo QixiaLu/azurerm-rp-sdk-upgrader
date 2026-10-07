@@ -73,13 +73,26 @@ def read_result(result_path: str | Path) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def write_result(result_path: str | Path, obj: dict[str, Any]) -> None:
-    """Write ``obj`` as canonical JSON (sorted keys, 2-space indent, trailing \\n).
+def _sort_json_keys(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _sort_json_keys(value[key]) for key in sorted(value)}
+    if isinstance(value, list):
+        return [_sort_json_keys(item) for item in value]
+    return value
+
+
+def write_result(result_path: str | Path, obj: dict[str, Any], *,
+                 summary_first: bool = False, indent: int = 2) -> None:
+    """Write canonical JSON with sorted keys and an optional leading summary.
 
     Centralising this keeps every stage's sidecar byte-identical in shape so
     downstream reads never have to cope with hand-assembled JSON.
     """
-    text = json.dumps(obj, indent=2, sort_keys=True) + "\n"
+    ordered = _sort_json_keys(obj)
+    if summary_first and "summary" in ordered:
+        ordered = {"summary": ordered["summary"],
+                   **{key: value for key, value in ordered.items() if key != "summary"}}
+    text = json.dumps(ordered, indent=indent) + "\n"
     Path(result_path).write_text(text, encoding="utf-8")
 
 
@@ -380,7 +393,7 @@ def run_go_build(repo: str | Path, package: str = "./...",
     returncode = proc.returncode
 
     if include_tests:
-        test_command = ["go", "test", "-vet=off", "-run=^$", test_package]
+        test_command = ["go", "test", "-p", "2", "-vet=off", "-run=^$", test_package]
         print(f"[DEBUG] running {subprocess.list2cmdline(test_command)}")
         test_proc = _run(test_command, repo, timeout)
         combined += "\n" + (test_proc.stdout or "") + (test_proc.stderr or "")
@@ -722,6 +735,20 @@ def finalize_result(result: dict[str, Any], *, provenance: dict[str, Any]) -> di
                   "Provider-surface review or non-blocking findings remain." if verdict == "needs_review" else
                   "Build and recorded compatibility checks passed.",
     }
+    acctest_counts = acctest.get("counts")
+    new_failed = (acctest_counts.get("new_failed")
+                  if isinstance(acctest_counts, dict) else None)
+    if not isinstance(new_failed, int):
+        new_failed = len(acctest.get("new_failures") or [])
+    summary = [
+        f"Build: {'passed' if final.get('build_passed') else 'failed'}",
+        f"API changes: {len(changes)} (exposed: {len(exposed)}, review: {len(unknown)})",
+        f"Findings: {len(findings)} (blocking: {sum(f['blocking'] for f in findings)})",
+    ]
+    if "acctest" in final:
+        summary.append(f"New acctest failures: {new_failed}")
+    summary.append(f"Readiness: {verdict}")
+    final["summary"] = " | ".join(summary)
     return final
 
 

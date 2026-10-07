@@ -13,7 +13,6 @@ State lives on disk; the session is fresh and never re-attaches to a prior run.
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import shutil
 import sys
@@ -181,7 +180,7 @@ def _pid_alive(pid: int) -> bool:
     # A finished detached run that reparented to PID 1 (python) can linger as a
     # zombie that os.kill still "sees" until reaped — which never happens when
     # python is PID 1. Treat a zombie (/proc state 'Z') as not alive so the
-    # watcher can move on to collect. Works with or without `docker run --init`.
+    # watcher can move on to collect.
     try:
         with open(f"/proc/{pid}/stat", encoding="utf-8") as fh:
             data = fh.read()
@@ -313,8 +312,7 @@ def _merge_into_final_report(final_result: Path, acctest_report: dict[str, Any])
     final = read_result(final_result)
     final["acctest"] = acctest_report
     try:
-        final_result.write_text(json.dumps(final, indent=2, sort_keys=True) + "\n",
-                                encoding="utf-8")
+        helpers.write_result(final_result, final, summary_first=True, indent=1)
         return True
     except OSError as exc:
         print(f"  warning: could not merge acctest findings into {final_result} ({exc}); "

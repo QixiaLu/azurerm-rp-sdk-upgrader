@@ -158,14 +158,14 @@ class TestRunGoBuild(unittest.TestCase):
             [call.args[0] for call in print_mock.call_args_list],
             [
                 "[DEBUG] running go build ./sdk/...",
-                "[DEBUG] running go test -vet=off -run=^$ ./internal/...",
+                "[DEBUG] running go test -p 2 -vet=off -run=^$ ./internal/...",
             ],
         )
         self.assertEqual(
             [call.args[0] for call in run_mock.call_args_list],
             [
                 ["go", "build", "./sdk/..."],
-                ["go", "test", "-vet=off", "-run=^$", "./internal/..."],
+                ["go", "test", "-p", "2", "-vet=off", "-run=^$", "./internal/..."],
             ],
         )
 
@@ -217,6 +217,20 @@ class TestResultSidecar(unittest.TestCase):
     def test_read_missing_is_empty(self):
         self.assertEqual(helpers.read_result("/no/such/file.json"), {})
 
+    def test_summary_is_first_and_uses_compact_indentation(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "result.json"
+            helpers.write_result(
+                p,
+                {"status": "done", "summary": "Build passed."},
+                summary_first=True,
+                indent=1,
+            )
+
+            lines = p.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(lines[1], ' "summary": "Build passed.",')
+            self.assertEqual(lines[2], ' "status": "done"')
+
     def test_finalize_result_separates_sdk_and_provider_impact(self):
         result = helpers.finalize_result({
             "build_passed": True,
@@ -248,6 +262,11 @@ class TestResultSidecar(unittest.TestCase):
         self.assertEqual(result["findings"][0]["owner"], "provider-maintainers")
         self.assertEqual(result["merge_readiness"]["verdict"], "needs_review")
         self.assertEqual(result["cleanup"][0]["status"], "clean")
+        self.assertEqual(
+            result["summary"],
+            "Build: passed | API changes: 1 (exposed: 0, review: 0) | "
+            "Findings: 1 (blocking: 0) | New acctest failures: 0 | Readiness: needs_review",
+        )
 
 
 class TestUpgradeProgress(unittest.TestCase):

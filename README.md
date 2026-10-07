@@ -1,96 +1,224 @@
-# AzureRM API Upgrader
+# apiupgrader
 
 A GitHub Copilot-powered CLI for upgrading one Azure Resource Provider SDK API
-version in `terraform-provider-azurerm`.
+version in `terraform-provider-azurerm` (AzureRM API Upgrader).
 
 It edits the supplied checkout, resolves compile failures, assesses user-facing
 API changes as breaking or non-breaking, and can investigate acceptance-test
 failures. Acceptance tests are advisory; upgrade success is determined by
 `go build ./...`.
 
-All changes remain unstaged for review. The tool never commits, pushes, switches
-branches, or opens pull requests.
+All changes are made directly in the supplied checkout on its currently checked-out
+branch and remain unstaged for review. The tool never creates or switches branches,
+commits, pushes, or opens pull requests.
 
-## Requirements
+## Prerequisites
 
-- Python 3.9+, Git, and the Go toolchain required by the provider checkout.
-- `GH_TOKEN` with GitHub Copilot access.
-- For acceptance tests: Terraform, Azure
-  credentials, and `TEAMCITY_TOKEN` (or `TEAMCITY_ACCESSTOKEN`).
-- For local SDK generation: `goimports`, Pandora, and `go-azure-sdk` checkouts.
+Run the documented workflow from a **Windows PowerShell terminal** (Windows
+PowerShell or PowerShell 7). The commands and orchestration are written for
+PowerShell; Bash, Command Prompt, and WSL are not supported or tested.
+
+- Python 3.9 or newer, Git for Windows, and the Go toolchain required by the
+  provider checkout. Make sure `python`, `git`, and `go` are available in the
+  PowerShell `PATH`.
+- Network access to the required Git remotes, GitHub Copilot, Go module
+  sources, and Terraform Registry when running `breaking-change`; acceptance
+  tests also need access to Azure and, when configured, the TeamCity server.
+- A writable local `terraform-provider-azurerm` checkout. Configure Git
+  authentication independently (for example, Git Credential Manager or SSH)
+  for any private remotes. The upgrader does not pull or switch branches for
+  you.
+- A `GH_TOKEN` with GitHub Copilot access for the `upgrade` and `acctest`
+  stages. The standalone `prebuild` and `breaking-change` stages do not use a
+  Copilot agent.
+- For `acctest` and `breaking-change`: Terraform on `PATH` and the Azure
+  service-principal settings listed below.
+- For `prebuild`: `goimports` on `PATH` and writable local Pandora and
+  `go-azure-sdk` checkouts.
+
+The default pipeline runs `upgrade` and `acctest`, so it needs the prerequisites
+for both stages. Select explicit stages with `--stage` to avoid requiring
+prerequisites for stages you are not running.
 
 ## Install
 
-```bash
-git clone <this-repo>
-cd ai-api-upgrade
-python3 -m venv .venv
-# Linux/macOS: source .venv/bin/activate
-# Git Bash: source .venv/Scripts/activate
-# PowerShell: .\.venv\Scripts\Activate.ps1
-pip install -e .
+```powershell
+git clone "<this-repo-url>" "apiupgrader"
+Set-Location ".\apiupgrader"
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e .
 ```
 
-Set `GH_TOKEN` in the environment or `.env`. Environment variables take
-precedence; `--env-file` loads a different file.
+Create a local `.env` file in the upgrader repository (it is git-ignored) for
+the credentials required by the stages you plan to run. For example:
+
+```dotenv
+GH_TOKEN=<token-with-github-copilot-access>
+
+# Required for acctest and breaking-change
+ARM_CLIENT_ID=<service-principal-client-id>
+ARM_CLIENT_SECRET=<service-principal-client-secret>
+ARM_SUBSCRIPTION_ID=<subscription-id>
+ARM_TENANT_ID=<tenant-id>
+ARM_TEST_LOCATION=eastus
+ARM_TEST_LOCATION_ALT=westus2
+ARM_TEST_LOCATION_ALT2=centralus
+
+# Optional for comparing acceptance failures with the TeamCity baseline
+TEAMCITY_TOKEN=<teamcity-access-token>
+# Optional; defaults to https://hashicorp.teamcity.com
+# TEAMCITY_SERVER_URL=https://teamcity.example.com
+```
+
+`TEAMCITY_ACCESSTOKEN` is also accepted in place of `TEAMCITY_TOKEN`. Without
+either TeamCity token, acceptance testing can still run, but its baseline
+comparison is degraded. `GH_TOKEN` is needed only for stages that use Copilot.
+Shell environment variables take precedence over `.env`; `--env-file` selects
+an alternative credentials file.
+
+Run `.\.venv\Scripts\apiupgrader.exe` from the project directory; virtual
+environment activation is not required.
+
+### Updating the provider checkout
+
+Before running an upgrade, update the local provider checkout from PowerShell
+if needed. Git must have network access and credentials for the remote:
+
+```powershell
+git -C "C:\Repos\terraform-provider-azurerm" status --short
+git -C "C:\Repos\terraform-provider-azurerm" pull --ff-only
+```
+
+Review or save local changes before pulling. The upgrader works against the
+checkout as it exists and does not run `git pull`, change branches, commit, or
+push. The `breaking-change` stage also needs these files in the provider
+checkout to be clean: `internal/acceptance/testcase.go` and
+`internal/acceptance/breaking_change_test.go`.
 
 ## Usage
 
 Upgrade without acceptance tests:
 
-```bash
-python -m upgrader keyvault 2023-07-01 \
-  --repo ~/repos/terraform-provider-azurerm \
+```powershell
+.\.venv\Scripts\apiupgrader.exe keyvault 2023-07-01 `
+  --repo "C:\Repos\terraform-provider-azurerm" `
   --stage upgrade
 ```
 
 Upgrade and investigate acceptance-test failures:
 
-```bash
-python -m upgrader keyvault 2023-07-01 \
-  --repo ~/repos/terraform-provider-azurerm \
-  --old-api-version 2023-02-01 \
+```powershell
+.\.venv\Scripts\apiupgrader.exe keyvault 2023-07-01 `
+  --repo "C:\Repos\terraform-provider-azurerm" `
+  --old-api-version 2023-02-01 `
   --test-regex 'TestAccKeyVault_'
 ```
-
-The installed `upgrader` command is equivalent to `python -m upgrader`.
 
 ### Breaking-change detection
 
 Run breaking-change detection independently against a released AzureRM provider:
+the `--provider-version` value must match the version represented by the
+checked-out provider repository. Find that version in the provider repo's
+`CHANGELOG.md` and pass it to the command.
 
-```bash
-python -m upgrader keyvault 2023-07-01 \
-  --repo ~/repos/terraform-provider-azurerm \
-  --stage breaking-change \
-  --provider-version 4.77.0 \
+```powershell
+.\.venv\Scripts\apiupgrader.exe keyvault 2023-07-01 `
+  --repo "C:\Repos\terraform-provider-azurerm" `
+  --stage breaking-change `
+  --provider-version 4.77.0 `
   --test-regex 'TestAccKeyVault_'
 ```
 
 To chain detection after the normal upgrade and acceptance-test flow, append the
 detector option to the existing command:
 
-```bash
-python -m upgrader keyvault 2023-07-01 \
-  --repo ~/repos/terraform-provider-azurerm \
-  --stage upgrade \
-  --stage acctest \
-  --stage breaking-change \
-  --provider-version 4.77.0 \
+```powershell
+.\.venv\Scripts\apiupgrader.exe keyvault 2023-07-01 `
+  --repo "C:\Repos\terraform-provider-azurerm" `
+  --stage upgrade `
+  --stage acctest `
+  --stage breaking-change `
+  --provider-version 4.77.0 `
   --test-regex 'TestAccKeyVault_'
+```
+
+The detector runs `git` and `go test` directly; it does not require Bash or a
+separate shell. `breaking-change.json` sets `breaking_change_detected` to `true`
+when `breaking-change.log` contains `ImportStateVerify attributes not equivalent`.
+Other test or setup failures still fail the stage but do not by themselves count
+as a detected breaking change.
+
+### Stage-specific requirements
+
+| Stage | Additional requirements and settings |
+| --- | --- |
+| `prebuild` | Git, Go, and `goimports` on `PATH`; writable Pandora, `go-azure-sdk`, and provider checkouts. Supply `--pandora-repo`, `--go-azure-sdk-repo`, and `--pandora-service`. The service name is Pandora's `name` in `config/resource-manager.hcl`. |
+| `upgrade` | `GH_TOKEN` with Copilot access, a writable provider checkout, and the provider's Go toolchain. The stage validates the change with `go build ./...`. If the SDK version is unpublished, run `prebuild` first. |
+| `acctest` | Terraform and Go on `PATH`; Azure service-principal and test-location variables from `.env`; `GH_TOKEN` for Copilot-based failure analysis. A TeamCity token is optional but enables the baseline comparison. `--test-regex` and `--parallel` control test selection and concurrency. |
+| `breaking-change` | Terraform, Go, Git, and the same Azure settings as `acctest`; set `--provider-version` to the version for the checked-out provider repo (find it in that repo's `CHANGELOG.md`), and optionally set `--test-regex` / `--parallel`. The stage temporarily patches acceptance-test harness files and restores them afterward. |
+
+GitHub CLI (`gh`) is optional; it can provide additional Azure REST API spec
+context but is not required to run the stages.
+
+### How the stages work
+
+Selected stages run in this order; stages not selected are skipped. `acctest`
+is advisory, while a failed `prebuild`, `upgrade`, or `breaking-change` stops
+the pipeline.
+
+#### `prebuild`
+
+```mermaid
+flowchart LR
+    A["Update REST API specs and Pandora config"] --> B["Import API definitions"]
+    B --> C["Generate Go SDK"]
+    C --> D["Link local SDK in provider go.mod"]
+```
+
+#### `upgrade`
+
+```mermaid
+flowchart TD
+    A["Copilot updates provider code"] --> B["Run go build ./..."]
+    B --> C{"Build green?"}
+    C -- Yes --> D["Record result"]
+    C -- No --> E["Feed errors into next bounded round"]
+    E --> A
+```
+
+#### `acctest`
+
+```mermaid
+flowchart LR
+    A["Launch acceptance tests + capture baseline"] --> B["Wait for test run"]
+    B --> C["Compare and reduce failures"]
+    C --> D["Copilot investigates new failures"]
+    D --> E["Add findings to report (advisory)"]
+```
+
+#### `breaking-change`
+
+Sourced from https://github.com/ms-henglu/terraform-provider-sdk-diff-check-tool/tree/main
+
+```mermaid
+flowchart LR
+    A["Temporarily patch test harness"] --> B["Create state with released provider"]
+    B --> C["Import state with local provider"]
+    C --> D["Run selected Go acceptance tests"]
+    D --> E["Revert patch and record result"]
 ```
 
 ### Unpublished SDK versions
 
 Generate the target SDK from local repositories when it is not published:
 
-```bash
-python -m upgrader network 2025-09-01 \
-  --repo ~/repos/terraform-provider-azurerm \
-  --stage prebuild \
-  --stage upgrade \
-  --pandora-repo ~/repos/pandora \
-  --go-azure-sdk-repo ~/repos/go-azure-sdk \
+```powershell
+.\.venv\Scripts\apiupgrader.exe network 2025-09-01 `
+  --repo "C:\Repos\terraform-provider-azurerm" `
+  --stage prebuild `
+  --stage upgrade `
+  --pandora-repo "C:\Repos\pandora" `
+  --go-azure-sdk-repo "C:\Repos\go-azure-sdk" `
   --pandora-service Network
 ```
 
@@ -110,7 +238,7 @@ run in pipeline order: `prebuild`, `upgrade`, `acctest`, then `breaking-change`.
 | `--old-api-version` | Existing API version; detected when omitted. |
 | `--test-regex` | Acceptance-test `-run` filter (default: `TestAcc`). |
 | `--parallel` | Maximum parallel acceptance tests (default: 11). |
-| `--provider-version` | Released AzureRM version used by the `breaking-change` stage. |
+| `--provider-version` | AzureRM version for the checked-out provider repo, found in its `CHANGELOG.md`; required by the `breaking-change` stage. |
 | `--max-rounds` | Maximum upgrade rounds (default: 8). |
 | `--model` | Copilot model to use. |
 | `--env-file` | Alternative credentials file. |
@@ -119,7 +247,7 @@ run in pipeline order: `prebuild`, `upgrade`, `acctest`, then `breaking-change`.
 | `--go-azure-sdk-repo` | `go-azure-sdk` checkout used for generation. |
 | `--pandora-service` | Pandora service name used for generation. |
 
-Run `upgrader --help` for the authoritative CLI reference.
+Run `.\.venv\Scripts\apiupgrader.exe --help` for the authoritative CLI reference.
 
 ## Output
 
@@ -155,16 +283,6 @@ resource locators are recorded under `cleanup`.
 
 Review changes with:
 
-```bash
-git -C <provider-repo> diff
+```powershell
+git -C "C:\Repos\terraform-provider-azurerm" diff
 ```
-
-## Docker
-
-```pwsh
-$env:AZURERM_REPO = "C:\Repos\terraform-provider-azurerm"
-docker compose run --rm upgrader keyvault 2023-07-01 --repo /workspace/azurerm --stage upgrade
-```
-
-Compose loads `.env`. Rebuild the image after source changes with
-`docker compose build upgrader`.
