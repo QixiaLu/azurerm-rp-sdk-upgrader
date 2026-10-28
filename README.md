@@ -31,6 +31,11 @@ PowerShell; Bash, Command Prompt, and WSL are not supported or tested.
 - A `GH_TOKEN` with GitHub Copilot access for the `upgrade` and `acctest`
   stages. The standalone `prebuild` and `breaking-change` stages do not use a
   Copilot agent.
+- For API spec context and operation changes: install `gh` on `PATH` and
+  authenticate with `gh auth login` or `GH_TOKEN` / `GITHUB_TOKEN`. Requires
+  GitHub API access and matching specs in `Azure/azure-rest-api-specs`.
+  Version comparisons also need an old API version (auto-detected or set via
+  `--old-api-version`) and its specs. Collection failures do not stop the stages.
 - For `acctest` and `breaking-change`: Terraform on `PATH` and the Azure
   service-principal settings listed below.
 - For `prebuild`: `goimports` on `PATH` and writable local Pandora and
@@ -144,8 +149,9 @@ as a detected breaking change.
 | `acctest` | Terraform and Go on `PATH`; Azure service-principal and test-location variables from `.env`; `GH_TOKEN` for Copilot-based failure analysis. A TeamCity token is optional but enables the baseline comparison. `--test-regex` and `--parallel` control test selection and concurrency. |
 | `breaking-change` | Terraform, Go, Git, and the same Azure settings as `acctest`; set `--provider-version` to the version for the checked-out provider repo (find it in that repo's `CHANGELOG.md`), and optionally set `--test-regex` / `--parallel`. The stage temporarily patches acceptance-test harness files and restores them afterward. |
 
-GitHub CLI (`gh`) is optional; it can provide additional Azure REST API spec
-context but is not required to run the stages.
+GitHub CLI (`gh`) is optional for running the stages, but required for the
+additional Azure REST API spec context and operation changes described in
+[Prerequisites](#prerequisites).
 
 ### How the stages work
 
