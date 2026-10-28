@@ -158,14 +158,14 @@ class TestRunGoBuild(unittest.TestCase):
             [call.args[0] for call in print_mock.call_args_list],
             [
                 "[DEBUG] running go build ./sdk/...",
-                "[DEBUG] running go test -p 2 -vet=off -run=^$ ./internal/...",
+                "[DEBUG] running go test -vet=off -run=^$ ./internal/...",
             ],
         )
         self.assertEqual(
             [call.args[0] for call in run_mock.call_args_list],
             [
                 ["go", "build", "./sdk/..."],
-                ["go", "test", "-p", "2", "-vet=off", "-run=^$", "./internal/..."],
+                ["go", "test", "-vet=off", "-run=^$", "./internal/..."],
             ],
         )
 

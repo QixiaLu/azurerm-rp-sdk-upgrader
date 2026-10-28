@@ -393,7 +393,7 @@ def run_go_build(repo: str | Path, package: str = "./...",
     returncode = proc.returncode
 
     if include_tests:
-        test_command = ["go", "test", "-p", "2", "-vet=off", "-run=^$", test_package]
+        test_command = ["go", "test", "-vet=off", "-run=^$", test_package]
         print(f"[DEBUG] running {subprocess.list2cmdline(test_command)}")
         test_proc = _run(test_command, repo, timeout)
         combined += "\n" + (test_proc.stdout or "") + (test_proc.stderr or "")
