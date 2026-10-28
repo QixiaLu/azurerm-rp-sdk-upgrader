@@ -196,10 +196,15 @@ def serve_data_api(pandora_repo: Path, service_name: str, log: TextIO) -> Iterat
 def update_rest_api_specs(pandora_repo: Path, directory: str, api_version: str,
                           log: TextIO) -> None:
     specs = pandora_repo / "submodules" / "rest-api-specs"
-    _run(["git", "submodule", "update", "--init", "submodules/rest-api-specs"], cwd=pandora_repo,
-         log=log)
+    # Apply to both submodule clones and existing SSH origins without editing Git config.
+    git = ["git", "-c",
+           "url.https://github.com/Azure/azure-rest-api-specs.git.insteadOf="
+           "git@github.com:Azure/azure-rest-api-specs.git"]
+    _run([*git, "submodule", "update", "--init", "submodules/rest-api-specs"],
+         cwd=pandora_repo, log=log)
     if not _spec_exists(specs, directory, api_version):
-        _run(["git", "-C", str(specs), "fetch", "origin", _SPECS_BRANCH], cwd=pandora_repo, log=log)
+        _run([*git, "-C", str(specs), "fetch", "origin", _SPECS_BRANCH],
+             cwd=pandora_repo, log=log)
         _run(["git", "-C", str(specs), "checkout", "--force", "FETCH_HEAD"], cwd=pandora_repo,
              log=log)
     if not _spec_exists(specs, directory, api_version):
